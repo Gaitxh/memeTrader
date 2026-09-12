@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections import Counter
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -36,6 +37,10 @@ from .paper_execution import (
     pool_is_below_floor,
     pool_has_trade_liquidity,
     sell_terms,
+)
+from .pool_concentration import (
+    CONCENTRATION_REASON,
+    pool_concentration_decision,
 )
 
 from .models import (
@@ -9571,7 +9576,7 @@ class Store:
 
     def _enqueue_token_detail_hydration_locked(self, chain: str, address: str, *, enqueued_at=None) -> None:
         normalized_chain = str(chain).strip().lower()
-        normalized_address = str(address).strip()
+        normalized_address = canonical_token_address(normalized_chain, address)
         if not normalized_chain or not normalized_address:
             return
         self.db.execute(
@@ -9595,17 +9600,22 @@ class Store:
     def requeue_token_detail_hydration(self, token_id: str, *, enqueued_at=None,
                                       no_pair_only: bool = False) -> bool:
         queued = parse_time(enqueued_at or utcnow())
+        token_chain, separator, token_address = str(token_id).partition(":")
+        canonical_id = (
+            f"{token_chain.strip().lower()}:{canonical_token_address(token_chain, token_address)}"
+            if separator else str(token_id)
+        )
         with self._lock, self.db:
             row = self.db.execute(
                 "SELECT token_id,status,last_attempt_at FROM token_detail_hydration WHERE token_id=?",
-                (str(token_id),),
+                (canonical_id,),
             ).fetchone()
             if no_pair_only and (row is None or row["status"] != "no_pair"
                     or row["last_attempt_at"] and parse_time(row["last_attempt_at"]) >= queued):
                 return False
             if row is None:
                 token = self.db.execute(
-                    "SELECT chain,address FROM tokens WHERE token_id=?", (str(token_id),)
+                    "SELECT chain,address FROM tokens WHERE token_id=?", (canonical_id,)
                 ).fetchone()
                 if token is None:
                     return False
@@ -9619,7 +9629,7 @@ class Store:
                 SET status='pending',enqueued_at=?,next_attempt_at=?,last_error='',followup_until=NULL
                 WHERE token_id=?
                 """,
-                (iso(queued), iso(queued), str(token_id)),
+                (iso(queued), iso(queued), canonical_id),
             )
             return True
 
@@ -9780,37 +9790,67 @@ class Store:
                 ) THEN 0 ELSE 1 END,
             """
             priority_params += priority_patterns
+        available = max(0, min(300, int(limit)) - len(followups))
+        base_sql = f"""
+            SELECT * FROM token_detail_hydration
+            WHERE status IN ('pending','no_pair','error')
+              AND followup_until IS NULL
+              AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+              {chain_filter}
+            ORDER BY
+              CASE WHEN EXISTS(
+                SELECT 1 FROM token_universe_funnel_transitions AS handoff
+                WHERE handoff.token_id=token_detail_hydration.token_id
+                  AND handoff.stage='context_trigger_evaluation'
+                  AND handoff.status='eligible'
+                  AND handoff.reason_code='browser_exact_token_metadata_post_captured'
+                  AND (
+                    token_detail_hydration.last_attempt_at IS NULL
+                    OR handoff.recorded_at>token_detail_hydration.last_attempt_at
+                  )
+              ) THEN 0 ELSE 1 END,
+              {priority_order} {{age_order}},attempts,token_id LIMIT ?
+        """
+        params = (due_at, *chain_params, *priority_params)
+
+        def fetch(age_order: str, row_limit: int) -> list[sqlite3.Row]:
+            if row_limit <= 0:
+                return []
+            return list(self.db.execute(
+                base_sql.format(age_order=age_order), (*params, int(row_limit))))
+
         with self._lock:
-            return list(
-                self.db.execute(
-                    f"""
-                    SELECT * FROM token_detail_hydration
-                    WHERE status IN ('pending','no_pair','error')
-                      AND followup_until IS NULL
-                      AND (next_attempt_at IS NULL OR next_attempt_at<=?)
-                      {chain_filter}
-                    ORDER BY
-                      CASE WHEN EXISTS(
-                        SELECT 1 FROM token_universe_funnel_transitions AS handoff
-                        WHERE handoff.token_id=token_detail_hydration.token_id
-                          AND handoff.stage='context_trigger_evaluation'
-                          AND handoff.status='eligible'
-                          AND handoff.reason_code='browser_exact_token_metadata_post_captured'
-                          AND (
-                            token_detail_hydration.last_attempt_at IS NULL
-                            OR handoff.recorded_at>token_detail_hydration.last_attempt_at
-                          )
-                      ) THEN 0 ELSE 1 END,
-                      {priority_order} {
-                          "COALESCE((SELECT first_seen_at FROM tokens AS token "
-                          "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC"
-                          if prefer_fresh else "enqueued_at ASC"
-                      },attempts,token_id LIMIT ?
-                    """,
-                    (due_at, *chain_params, *priority_params,
-                     max(0, min(300, int(limit)) - len(followups))),
+            if not prefer_fresh or available < 5:
+                age_order = (
+                    "COALESCE((SELECT first_seen_at FROM tokens AS token "
+                    "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC"
+                    if prefer_fresh else "enqueued_at ASC"
                 )
-            ) + followups
+                selected = fetch(age_order, available)
+            else:
+                # A pure newest-first queue permanently starves an old backlog
+                # whenever discovery arrival exceeds hydration throughput. Keep
+                # 80% of each batch for the latency-sensitive fresh lane and
+                # reserve 20% for deterministic oldest-first drainage. Priority
+                # migrations and exact social handoffs retain precedence in both
+                # lanes; de-duplication prevents them consuming two slots.
+                oldest_quota = max(1, available // 5)
+                fresh_quota = available - oldest_quota
+                selected = fetch(
+                    "COALESCE((SELECT first_seen_at FROM tokens AS token "
+                    "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC",
+                    fresh_quota,
+                )
+                selected_ids = {str(row["token_id"]) for row in selected}
+                oldest_candidates = fetch(
+                    "enqueued_at ASC", oldest_quota + len(selected_ids),
+                )
+                selected.extend(
+                    row for row in oldest_candidates
+                    if str(row["token_id"]) not in selected_ids
+                )
+                selected = selected[:available]
+            return selected + followups
 
     def mark_token_detail_hydration(
         self,
@@ -18451,10 +18491,14 @@ class Store:
                     "ReadTimeout", "RemoteProtocolError", "TimeoutError",
                     "WriteTimeout",
                 )
+                source_aliases = tuple(dict.fromkeys((
+                    source, source.replace("_", "-"), source.replace("-", "_"),
+                )))
+                placeholders = ",".join("?" for _ in source_aliases)
                 recovered = self.db.execute(
                     "SELECT id,error_type,message_safe,last_seen_at FROM system_error_cases "
-                    "WHERE area='runtime' AND component=? AND status='new'",
-                    (source,),
+                    f"WHERE area='runtime' AND component IN ({placeholders}) AND status='new'",
+                    source_aliases,
                 ).fetchall()
                 for case in recovered:
                     error_type = str(case["error_type"] or "")
@@ -18462,6 +18506,9 @@ class Store:
                     is_transient = error_type.startswith(transient_prefixes) or (
                         error_type == "RuntimeError"
                         and message.startswith("held_account_subscription_rejected")
+                    ) or (
+                        error_type == "ExceptionGroup"
+                        and message.startswith("unhandled errors in a TaskGroup")
                     )
                     # An empty response or a successful *different* pool does
                     # not establish recovery. Single quote lanes and discovery
@@ -18469,6 +18516,11 @@ class Store:
                     retryable = (
                         error_type == "QUOTE_TIMEOUT"
                         or error_type == "JupiterQuoteError"
+                        or error_type in {
+                            "HTTPStatusError", "RuntimeError",
+                            "native_source_timeout", "native_rpc_error",
+                        }
+                        or error_type.startswith("http_status_429")
                         or (error_type.startswith("HTTPStatusError")
                             and bool(re.search(r"\b(?:429|5\d\d)\b", error_type + " " + message)))
                     )
@@ -26584,6 +26636,57 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_exit150_experiments(self) -> int:
+        """Append the EXIT150 reachable-ladder exit-carrier arms at their own frontier.
+
+        These are exit-carrier arms: the alpha149 engine clones the first frozen entry signal
+        that fires on a pool, so each new arm gets exactly the same opportunity as whichever
+        entry arm fired first and only its EXIT contract differs. Every existing arm is
+        therefore the matched same-signal control, and no existing arm is modified.
+
+        The policy body is cloned from this epoch's own registered exit carrier rather than
+        rebuilt, so the appended arm carries exactly the live schema (`entry_match_mode`,
+        `entry_gate`, `required_inputs`, `trajectory_rules`, ...) instead of a re-invented one.
+        """
+        from . import exits150
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            template = self.db.execute(
+                "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, "alpha149_vol_scaled_exit_v1"),
+            ).fetchone()
+            if template is None:
+                return 0
+            base = self._json_object(template["policy_json"])
+            at = utcnow()
+            added = 0
+            for arm in sorted(exits150.EXIT_ARMS):
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?", (version, arm),
+                ).fetchone() is not None:
+                    continue
+                policy = deepcopy(base)
+                policy.update({
+                    "arm_id": arm,
+                    "canonical_id": arm,
+                    "entry_family": arm,
+                    "entry_filter": {
+                        **(base.get("entry_filter") or {}), "direction": arm,
+                    },
+                    "source_arm_ids": [],
+                })
+                # The frontier and the behavior hash are owned by the append API, which stamps
+                # them for the current snapshot/evaluation frontier.
+                policy.pop("behavior_contract_hash", None)
+                policy.pop("forward_activation_snapshot_id", None)
+                policy.pop("forward_started_at", None)
+                exits150.apply([policy])
+                self.append_chain_meme_trader_policy(policy, activated_at=at)
+                added += 1
+            return added
+
     def register_chain_meme_research_round2(self) -> int:
         from .research_round2 import round2_policies
         added = 0
@@ -28152,7 +28255,7 @@ class Store:
                     consumed.update(status="CONSUMED", seen_opportunity_ids=seen)
                     features["wallet_entry_states"][arm] = consumed
                 self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,?,?)",
-                    (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", observation_reason, self._json(features)))
+                    (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", observation_reason, self._json(self._compact_cohort_signals_for_storage(features))))
                 event_shadow = getattr(self, '_event_clone_shadow', None)
                 if event_shadow:
                     try:event_shadow.frame(token,snapshot,decision_at,features)
@@ -28922,6 +29025,30 @@ class Store:
                     ),
                 )
                 continue
+            # Cross-arm per-pool cap. This loop is the real fan-out site: one cohort and one
+            # entry fill become one position per admitted arm. Measured 2026-09-12: a single
+            # cohort put 35-42 arms into one pool in the same transaction, the worst burst was
+            # 40 positions in one second, and 350 positions covered only 11 tokens. Four pools
+            # that died took 169 of those positions with them (-3,380 USD, 89.9% of the loss).
+            # Position rows inserted earlier in THIS loop are already visible to the count, so
+            # the cap holds within a single pass as well as against the standing book.
+            concentration_ok, concentration_reason = self._chain_meme_pool_concentration_allows(
+                version=version,
+                definition=definition,
+                identity=self._chain_meme_entry_pool_identity(version, cohort_id, token_id),
+                new_arms_this_pass=0,
+            )
+            if not concentration_ok:
+                # `chain_meme_trader_entry_participant_outcomes.outcome` is constrained by a
+                # CHECK to two legacy values, so this refusal deliberately writes no row there
+                # rather than risk an IntegrityError inside the entry transaction. It is
+                # counted and persisted separately, which is enough to observe the gate.
+                self._count_pool_concentration_refusal(
+                    definition_version=version, token_id=token_id,
+                    pair_address=self._chain_meme_entry_pool_identity(
+                        version, cohort_id, token_id),
+                )
+                continue
             self.db.execute(
                 "INSERT OR IGNORE INTO chain_meme_trader_positions("
                 "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
@@ -29635,7 +29762,7 @@ class Store:
                     (
                         version, snapshot_id, token_id, iso(decision_at),
                         "admitted" if family is not None else "rejected", family,
-                        reason, self._json(features),
+                        reason, self._json(self._compact_cohort_signals_for_storage(features)),
                     ),
                 )
                 evaluated += 1
@@ -30699,6 +30826,146 @@ class Store:
             )
             return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
 
+    def _chain_meme_entry_pool_identity(
+        self, version: str, shadow_cohort_id: Any, token_id: str,
+    ) -> tuple[str, str] | None:
+        """Resolve the exact (token, pool) an admitted cohort belongs to.
+
+        Missing identity means "cannot be counted", which must never block an entry: the
+        gate below only ever refuses a pool it has positively identified as crowded.
+        """
+        try:
+            row = self.db.execute(
+                "SELECT token_id,pair_address FROM chain_meme_trader_v6_cohorts "
+                "WHERE id=? AND definition_version=?",
+                (int(shadow_cohort_id), str(version)),
+            ).fetchone()
+        except (TypeError, ValueError):
+            return None
+        if row is None:
+            return None
+        pair = str(row["pair_address"] or "").strip().lower()
+        if not pair:
+            return None
+        return str(row["token_id"] or token_id), pair
+
+    def _count_pool_concentration_refusal(
+        self, *, definition_version: str, token_id: str,
+        pair_address: tuple[str, str] | None,
+    ) -> None:
+        """Record one cross-arm concentration refusal, in memory only.
+
+        Deliberately performs NO database write. This runs inside the projection
+        transaction, and `set_kv` wraps `with self.db:`, which would commit that transaction
+        early and could persist a half-projected cohort. Telemetry is not worth that risk.
+        The gate's effect is measured directly instead (arms per pool must respect the cap)
+        and the counter is exposed for in-process diagnostics.
+        """
+        self._chain_meme_concentration_refusals = (
+            int(getattr(self, "_chain_meme_concentration_refusals", 0)) + 1
+        )
+
+    def _chain_meme_open_arms_on_pool(
+        self, version: str, identity: tuple[str, str],
+    ) -> int:
+        """How many distinct arms already hold this exact pool on this version."""
+        token_id, pair = identity
+        row = self.db.execute(
+            "SELECT COUNT(DISTINCT p.arm_id) AS open_arms FROM chain_meme_trader_positions p "
+            "JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+            "AND c.definition_version=p.definition_version "
+            "WHERE p.definition_version=? AND p.token_id=? "
+            "AND LOWER(c.pair_address)=? AND p.status='open'",
+            (str(version), token_id, pair),
+        ).fetchone()
+        return int(row["open_arms"] or 0) if row is not None else 0
+
+    def _chain_meme_pool_concentration_allows(
+        self, *, version: str, definition: Mapping[str, Any],
+        identity: tuple[str, str] | None, new_arms_this_pass: int,
+    ) -> tuple[bool, str]:
+        """Cross-arm per-pool cap. An unidentified pool or an uncapped definition always allows."""
+        if identity is None:
+            return True, ""
+        open_arms = self._chain_meme_open_arms_on_pool(version, identity)
+        allowed, reason = pool_concentration_decision(
+            open_arms_on_pool=open_arms,
+            new_arms_this_pass=int(new_arms_this_pass),
+            definition=definition,
+        )
+        if allowed:
+            return True, ""
+        self._chain_meme_concentration_refusals = (
+            int(getattr(self, "_chain_meme_concentration_refusals", 0)) + 1
+        )
+        return False, reason or CONCENTRATION_REASON
+
+    # The three `feature_vector` fields that any reader in this codebase actually consumes.
+    # Verified by grepping every `.py` under `src/memetrader` and `scripts` for
+    # `feature_vector`: there are exactly TWO readers and they touch only these:
+    #   store.py  `distinct_trajectory`: `frozen['pair_address']`, `frozen['observed_at']`
+    #   mode_learning144.py            : `feature_vector.get('ingested_at')`, with a fallback
+    # Nothing else in the package reads the vector. Keeping them preserves both readers
+    # byte-for-byte; dropping the remaining ~7.5 KB per arm is what removes the payload.
+    _COHORT_VECTOR_KEEP = ("pair_address", "observed_at", "ingested_at")
+
+    def _compact_cohort_signals_for_storage(
+        self, features: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Shrink the per-arm `feature_vector` copy that dominated the whole database.
+
+        Measured 2026-09-13: `cohort_observation` rows were 582.2 MB of a 920.7 MB database
+        (63%), averaging 86,101 bytes and peaking at 444,925. Inside one 98 KB row
+        `cohort_signals` was 81,188 bytes (83%) because it held ~16 entries of ~7,780 bytes
+        each carrying the SAME `decision_evidence.feature_vector` - one feature vector copied
+        once per signalling arm. The database was growing ~7 MB per 10 minutes (~1 GB/day).
+
+        This returns a copy whose per-arm `feature_vector` keeps ONLY the fields the two
+        readers above use. It never mutates the caller's mapping, so every in-memory consumer
+        (the engines, mode_learning144, cohort_experiments, the exit path) sees exactly the
+        object it saw before. Only what reaches `feature_json` changes.
+
+        Fully reversible: stop calling it and the previous payloads resume.
+        """
+        if not isinstance(features, Mapping):
+            return dict(features or {})
+        signals = features.get("cohort_signals")
+        if not isinstance(signals, Mapping) or not signals:
+            return dict(features)
+        compact: dict[str, Any] = {}
+        changed = False
+        for arm, signal in signals.items():
+            if not isinstance(signal, Mapping):
+                compact[arm] = signal
+                continue
+            evidence = signal.get("decision_evidence")
+            if not isinstance(evidence, Mapping):
+                compact[arm] = signal
+                continue
+            vector = evidence.get("feature_vector")
+            if not isinstance(vector, Mapping):
+                compact[arm] = signal
+                continue
+            keep = {k: vector[k] for k in self._COHORT_VECTOR_KEEP if k in vector}
+            if len(keep) == len(vector):
+                compact[arm] = signal
+                continue
+            changed = True
+            new_signal = dict(signal)
+            new_evidence = dict(evidence)
+            new_evidence["feature_vector"] = keep
+            new_evidence["feature_vector_compacted"] = (
+                "only the fields read by the store/learning readers are retained; "
+                "the full vector was written per arm and is recoverable from token_snapshots"
+            )
+            new_signal["decision_evidence"] = new_evidence
+            compact[arm] = new_signal
+        if not changed:
+            return dict(features)
+        stored = dict(features)
+        stored["cohort_signals"] = compact
+        return stored
+
     def settle_chain_meme_trader_execution_result(self, result_id: int) -> int:
         """Project immutable Paper results into fills and positions exactly once."""
         settled = 0
@@ -30752,6 +31019,10 @@ class Store:
                 str(result["terminal_status"]) == "no_route"
                 and str(result["validity_status"]) == "valid"
             )
+            # Cross-arm concentration is a property of one settlement pass as well as of the
+            # standing book: a single accepted frame can fan out across every eligible arm in
+            # the same call, so the arms added during THIS pass are counted separately.
+            pool_arms_added_this_pass: dict[tuple[str, str], int] = {}
             for intent_id in [int(value) for value in self._json_list(result["intent_ids_json"])]:
                 intent = self.db.execute(
                     "SELECT * FROM chain_meme_trader_order_intents WHERE id=? "
@@ -30954,6 +31225,30 @@ class Store:
                             "WHERE id=?", (str(result["completed_at"]), intent_id),
                         )
                         continue
+                    pool_identity = self._chain_meme_entry_pool_identity(
+                        version, int(intent["shadow_cohort_id"]), str(intent["token_id"]),
+                    )
+                    concentration_ok, concentration_reason = (
+                        self._chain_meme_pool_concentration_allows(
+                            version=version, definition=definition,
+                            identity=pool_identity,
+                            new_arms_this_pass=(
+                                pool_arms_added_this_pass.get(pool_identity, 0)
+                                if pool_identity is not None else 0
+                            ),
+                        )
+                    )
+                    if not concentration_ok:
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_order_intents SET status='failed',"
+                            "completed_at=?,reason=? WHERE id=?",
+                            (str(result["completed_at"]), concentration_reason, intent_id),
+                        )
+                        continue
+                    if pool_identity is not None:
+                        pool_arms_added_this_pass[pool_identity] = (
+                            pool_arms_added_this_pass.get(pool_identity, 0) + 1
+                        )
                     acquired = str(result["minimum_output_amount_raw"])
                     self.db.execute(
                         "INSERT OR IGNORE INTO chain_meme_trader_fills("
@@ -34753,7 +35048,8 @@ class Store:
             return True
         reference = self.db.execute(
             "SELECT price_usd, liquidity_usd FROM chain_meme_trader_market_mark_history "
-            "WHERE token_id=? AND pair_address=? AND status='VISIBLE' AND price_usd>0 "
+            "WHERE token_id=? AND pair_address=? COLLATE NOCASE AND status='VISIBLE' "
+            "AND price_usd>0 "
             "AND observed_at<? ORDER BY observed_at DESC LIMIT 5",
             (position["token_id"], position["mark_pair_address"],
              position["mark_observed_at"])).fetchall()
@@ -34831,7 +35127,8 @@ class Store:
             return False
         reference = self.db.execute(
             "SELECT price_usd, liquidity_usd FROM chain_meme_trader_market_mark_history "
-            "WHERE token_id=? AND pair_address=? AND status='VISIBLE' AND price_usd>0 "
+            "WHERE token_id=? AND pair_address=? COLLATE NOCASE AND status='VISIBLE' "
+            "AND price_usd>0 "
             "AND liquidity_usd IS NOT NULL AND observed_at<? "
             "ORDER BY observed_at DESC LIMIT 5",
             (position["token_id"], position["mark_pair_address"],
