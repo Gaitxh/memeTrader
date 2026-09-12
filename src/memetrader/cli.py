@@ -98,6 +98,23 @@ def cmd_init(path: str) -> int:
     return 0
 
 
+def _record_runtime_crash(root: Path, detail: str) -> None:
+    """Append one failure detail to `data/logs/runtime-crash.log`, never raising.
+
+    `_run_runtime` has two failure paths that return DIFFERENT codes - a refused start
+    (RuntimeError) returns 3 and a real crash (Exception) returns 1 - but both must leave the same
+    evidence; otherwise a supervisor restart loop shows an exit code and nothing else. Logging must
+    never be the reason a process fails to report its own failure, hence the guard.
+    """
+    try:
+        crash_log = root / "data" / "logs" / "runtime-crash.log"
+        crash_log.parent.mkdir(parents=True, exist_ok=True)
+        with crash_log.open("a", encoding="utf-8") as handle:
+            handle.write(detail.rstrip() + "\n")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
 async def _run_runtime(config_path: str, forever: bool) -> int:
     config, root = load_config(config_path)
     lock_path = Path(str(config.get("lock_file", "data/memetrader.lock")))
@@ -117,14 +134,24 @@ async def _run_runtime(config_path: str, forever: bool) -> int:
             finally:
                 await runtime.close()
     except RuntimeError as exc:
+        # A RuntimeError here is a REFUSAL TO START, not a crash: most often the single-instance
+        # lock (`runtime.py` raises "another memeTrader process is already running").
+        #
+        # It returns exit code 3 while a real crash returns 1 - measured on
+        # `data/logs/paper-supervisor.log`: of 457 runs under 5 seconds, **447 exited 3 and only
+        # 10 exited 1**. So the refused start is the DOMINANT startup-failure mode, by 45x, and it
+        # previously recorded NOTHING anywhere. That is why the 377-restart burst at 00:00 and the
+        # 64-restart burst at 04:48 could not be explained from the logs at all: the supervisor
+        # showed only the exit code.
+        #
+        # Recording it keeps the same exit code and stderr line and adds the traceback, so a
+        # refused start becomes diagnosable.
+        _record_runtime_crash(root, f"RuntimeError (refused start): {exc}\n{traceback.format_exc()}")
         print(str(exc), file=sys.stderr)
         return 3
     except Exception:
-        crash_log = root / "data" / "logs" / "runtime-crash.log"
-        crash_log.parent.mkdir(parents=True, exist_ok=True)
         detail = traceback.format_exc()
-        with crash_log.open("a", encoding="utf-8") as handle:
-            handle.write(detail + "\n")
+        _record_runtime_crash(root, detail)
         print(detail, file=sys.stderr)
         return 1
 
