@@ -1213,6 +1213,20 @@
       "loaded_at": "2026-09-12T01:38:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND04_PARTICIPANT_DATA_AND_SHADOW_CAP_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND04_PARTICIPANT_DATA_AND_SHADOW_CAP_20260912.md"
+    },
+    {
+      "id": "20260912-round05-trade-context-and-dust-mark-defect",
+      "recorded_at": "2026-09-12T02:45:00Z",
+      "title": "第5轮：每笔交易上下文账本 + 6小时复盘（短持仓是亏损中心）+ 根因缺陷修复（尘埃报价把+384%打成-100%）",
+      "problem": "用户要求：每笔交易完整记录上下文、定期自动复盘、并从根因解决'金狗拿不住'。本轮先建立上下文账本与复盘口径，再逐笔追查被洗出的真实案例，发现退出判定会被单条尘埃报价污染。",
+      "change": "① 新增 scripts/trade_context_ledger.py：逐笔记录发现来源(role/first_local_discovery)、入场机制(policy_additions.feature_hypothesis)、入场决策(status/reason)、信号强度(峰值涨幅)、退出原因、持仓时长、分批/本金锁定状态与 washed_out 标记，并输出家族/持仓桶/链/退出原因汇总。② 6小时复盘(1672笔)：胜率29.7%、合计-433.0U、PF0.59、洗出55笔(3.3%)；家族上 alpha149 -408.97U(PF0.55) 而 trajectory144 +29.19U(PF2.93)、trajectory145/146 +9.43U(PF2.35)；持仓桶显示 0-1分钟 -95.56U(胜率10.8%)、1-5分钟 -217.33U、5-15分钟 -175.76U，而 15-30分钟 +2.38U、30-60分钟 +30.88U(41.4%)、60分钟以上 +22.39U(56.2%)；成本中心为 hard_stop -469.99U(396笔) 与写销 -398.0U(134笔)，正贡献为 max_hold +304.91U(734笔) 与 trailing +137.21U(161笔)。③ 根因缺陷：solana:Xxd7AzFSJK...pump 的 1040 条标记平滑升到 0.02963(+384%)后，11秒后的下一条标记打印 0.00000192 且深度从 461,061 崩到 1,943（全序列唯一低于0.0001的一条），多条臂在该帧按追踪/止损成交，amount_raw=0、已实现 -1.999U/2U=-100%。量化：近60分钟2093条标记中有6条同属此类尘埃离群报价(≈144条/天)。④ 修复：新增 store._mark_is_plausible()，在价格驱动退出(HARD_STOP/TRAILING_EXIT/TAKE_PROFIT_*)成交前，要求价格不得同时 <= 同池最近5条中位价的10% 且 深度 <= 中位深度的25%，否则跳过该帧并计数(节流写入 kv['mark-outlier-vetos'])；流动性退出与写销路径完全不变(真正的死池仍必须离场)；参照不足3条或输入非法时不做判断(fail-open)。",
+      "rationale": "先修工程缺陷再解释策略结果：一条与池子真实深度相差4个数量级的报价不是可成交价格，它把深度盈利单结算成-100%，会系统性污染所有依赖价格的退出统计。守卫只针对价格驱动退出，不拦截流动性退出/写销，从而既消除伪亏损又不改变'死池必须离场'的安全语义。复盘口径(持仓时长/家族/退出原因/洗出率)为下一步的额外臂设计提供可证伪的方向。",
+      "validation": "新增 tests/test_mark_outlier_guard.py 2项：尘埃报价不得平仓且计数>0、随后真实崩塌(-25%、深度38万)必须照常退出、缺参照/非法输入不做判断；相关测试集98项全通过(alpha149、wave24-26、score149、participant_flow、dex_trajectory、shared_batch148、whipsaw、mark-outlier)。已重载(PID 16820/10152)；冻结错误 #265=392/#266=398 未增长，最新错误id 275；近20分钟正常开仓27笔/25臂/5代币。另外启用两个只读子代理并行产出洗出反事实与周期性复盘(结果下一轮并入)。",
+      "scope": "新增：scripts/trade_context_ledger.py、tests/test_mark_outlier_guard.py、docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md；修改：src/memetrader/store.py（新增 _mark_is_plausible 与价格退出守卫，未改任何策略规则）。数据产物：data/reports/trade_context/trades_*.jsonl 与 review_*.json（在仓库忽略目录内）。",
+      "commit": "",
+      "loaded_at": "2026-09-12T02:35:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md"
     }
   ]
 }

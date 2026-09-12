@@ -34365,6 +34365,56 @@ class Store:
         if streaks and float(economic_return) > float(level):
             streaks.pop(key, None)
 
+    def _mark_is_plausible(
+        self, position: Mapping[str, Any], price: Any, liquidity: Any,
+    ) -> bool:
+        """Reject a dust-liquidity outlier print before it becomes an exit price.
+
+        Measured case (2026-09-12T00:30:54Z, solana:Xxd7AzFSJK7xGf68fimagKnNVY2TLfanvn4veEYpump):
+        the pool's 1,040 marks climb smoothly to 0.02963 (+384% over the entry price) and
+        the very next mark, eleven seconds later, prints 0.00000192 with liquidity 1,943
+        against a 461,061 pool - 15,400x below the previous mark and the only sub-0.0001
+        mark in the whole series. The trailing exit filled on it and booked -100% on a
+        position that was +384% moments earlier. A print that is BOTH a deep price
+        outlier AND a collapsed-liquidity print is not a tradeable price; it is dust.
+
+        Only price-driven exits consult this (HARD_STOP, TRAILING_EXIT, TAKE_PROFIT_*).
+        Liquidity exits and write-offs are never gated: a genuinely dying pool must still
+        be left. Fewer than three comparable earlier marks means no judgement is made and
+        the previous behaviour stands.
+        """
+        try:
+            price = float(price)
+            liquidity = float(liquidity)
+        except (TypeError, ValueError):
+            return True
+        if price <= 0 or liquidity < 0:
+            return True
+        reference = self.db.execute(
+            "SELECT price_usd, liquidity_usd FROM chain_meme_trader_market_mark_history "
+            "WHERE token_id=? AND pair_address=? AND status='VISIBLE' AND price_usd>0 "
+            "AND observed_at<? ORDER BY observed_at DESC LIMIT 5",
+            (position["token_id"], position["mark_pair_address"],
+             position["mark_observed_at"])).fetchall()
+        prices = sorted(float(row["price_usd"]) for row in reference if row["price_usd"])
+        liquids = sorted(float(row["liquidity_usd"]) for row in reference if row["liquidity_usd"])
+        if len(prices) < 3 or not liquids:
+            return True
+        median_price = prices[len(prices) // 2]
+        median_liquidity = liquids[len(liquids) // 2]
+        if median_price <= 0:
+            return True
+        if price <= 0.10 * median_price and liquidity <= 0.25 * median_liquidity:
+            vetos = getattr(self, "_mark_outlier_vetos", 0) + 1
+            self._mark_outlier_vetos = vetos
+            if vetos % 25 == 1:
+                try:
+                    self.set_kv("mark-outlier-vetos", str(vetos))
+                except Exception:  # telemetry must never affect evaluation
+                    pass
+            return False
+        return True
+
     def _whipsaw_guard_allows_stop(
         self, policy: Mapping[str, Any], key: Any, *, elapsed_minutes: Any,
         liquidity: Any, buys: Any, sells: Any,
@@ -34958,6 +35008,13 @@ class Store:
                         sell_amount=int(position['amount_raw'])
                         trigger_evidence['dex_trajectory_exit']=vector
                 if action is None or sell_amount <= 0:
+                    continue
+                # Defect guard (round 3): a dust-liquidity outlier print must not be
+                # allowed to set the price of a price-driven exit. Liquidity exits and
+                # write-offs are deliberately excluded - a dying pool must still be left.
+                if (str(action) in ("HARD_STOP", "TRAILING_EXIT")
+                        or str(action).startswith("TAKE_PROFIT_")) and not self._mark_is_plausible(
+                        position, mark_price, position["mark_liquidity_usd"]):
                     continue
                 if (market_only_exit and action != "RUG_EXIT"
                         and trigger_evidence.get("required_fill") != POST_TRIGGER_AMOUNT_QUOTE):
