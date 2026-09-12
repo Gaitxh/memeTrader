@@ -1181,7 +1181,7 @@
       "rationale": "约束是'新策略必须以额外策略形式加入，不得修改/替换/覆盖任何现有策略'，因此评分门不做成全局硬门（全局门会改变100+条现有臂的入场行为），而是同入场同退出的额外臂对；评分本身只作观察。社交维度按用户决定不恢复采集，改用链上代理并在模块、规则文本与报告中三处显式标注证据缺口。",
       "validation": "tests/test_score149.py 6项 + tests/test_alpha149_wave2425.py 8项 + tests/test_alpha149.py 48项 = 62项全通过（含缺失不计中性、必需维度、窗口维度不强制、评分门同入场A/B、代理而非钱包证据、早段狙击1U/5分钟等断言；新增测试还捕获并修复了一个 prev_liq 未绑定异常）。注册预览/应用均 ledger_unchanged=true；重载后（PID 24244/38792）评分仪表已累积338帧：ge_min 169(50.0%)、coverage_ok 333(98.5%)、missing:momentum 67(19.8%)、missing:participation 46(13.6%)；mom_persistence 就绪25次并已开仓2笔；遥测 failures=0，冻结错误 #265=392/#266=398 未增长，live.enabled=false 与 paper 不变。",
       "scope": "新增：src/memetrader/score149.py、tests/test_score149.py、tests/test_alpha149_wave2425.py；修改（仅新增机制/臂/仪表，未改任何既有臂字段与共享引擎）：src/memetrader/alpha149.py；报告：docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md。未做（需用户确认的数据层改动）：把 raw_json 的 buyers/sellers 解析落库以把'新参与者增长'从代理升级为直观测；组合级同币敞口上限。",
-      "commit": "",
+      "commit": "d18d42f",
       "loaded_at": "2026-09-12T00:38:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md"
