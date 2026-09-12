@@ -280,6 +280,15 @@ SPECS = {
     # raw_json carried `buyers` 864 times. These arms are the first that read it.
     'alpha149_participant_growth_v1': ('participant_growth', '新参与者增长(直观测)', 30),
     'alpha149_participant_breadth_v1': ('participant_breadth', '参与广度·低捆绑代理', 30),
+    # wave 28 (round 4): the two strongest measured signals from the periodic review,
+    # each as an extra arm with a same-entry control. 24h realized exits: holds >=30m
+    # n=385 with 0 write-offs and +223.37U (mean +0.58) while holds <30m n=2,008 total
+    # -853.71U (mean -0.43); entry liquidity 1-5k n=81 with 0 write-offs and +118.64U
+    # while the 5k+ buckets carry 216 write-offs for -739.67U. Neither finding changes
+    # an existing arm: both are new ids on existing frozen entries.
+    'alpha149_long_hold_open_band_v1': ('survivable_open_band', '长持有·开放带(90分钟/宽追踪)', 90),
+    'alpha149_long_hold_control_v1': ('survivable_open_band', '长持有对照·同入场默认合同', 30),
+    'alpha149_thin_depth_tier_v1': ('thin_depth_tier', '薄深池档·1000-5000U(1U)', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -1002,7 +1011,35 @@ OVERRIDES = {
                     'score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。'
                     '两臂构成同池条件、同退出、阈值两侧的A/B，用于检验评分在"高FDV/深度档"里'
                     '能否把质量分开——这是评分门在放量后的真正检验场。'),
-    # ---- wave 27 (round 3b): participant facts, parsed instead of dropped --------
+    # ---- wave 28 (round 4): hold-time and thin-depth experiments ------------------
+    # The review's two strongest measured signals. The long-hold arm keeps the FULL
+    # measured loss protection (a -35% disaster stop and liquidity exits are untouched)
+    # and only widens the trail and the horizon, so it tests "let the winner run"
+    # without removing the safety net; its control is byte-identical but for those two
+    # numbers on the same frozen entry.
+    'alpha149_long_hold_open_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_long_hold_control_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='长持有·开放带（1U，90分钟）：入场与 alpha149_open_band_v1 完全相同，'
+                    '退出改为"追踪在+50%后才激活、允许回撤35%"并把时限放宽到90分钟，-35%仍作灾难兜底、'
+                    '流动性/写销规则完全不变。依据：24小时复盘中持仓≥30分钟的385笔 0 写销、+223.37U（均值+0.58），'
+                    '而<30分钟的2,008笔合计 -853.71U（均值-0.43）；6小时复盘同样显示 0-1分钟胜率10.8%、'
+                    '60分钟以上胜率56.2%。对照臂 alpha149_long_hold_control_v1 同入场同其他合同。'),
+    'alpha149_long_hold_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_long_hold_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='长持有对照（1U，30分钟）：与长持有臂完全同一入场，保留系统默认-20%止损、'
+                    '+30%→15%追踪与30分钟时限，用于把"放宽追踪+延长时限"的效应与入场本身分开。'),
+    'alpha149_thin_depth_tier_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='薄深池档（1U，30分钟）：池龄30-180分钟、原池深度1000-5000U、FDV/深度1-20、'
+                    '价格不下跌、深度不流失、买盘≥50%。依据：24小时复盘入场深度1-5k档 n=81、0 写销、+118.64U，'
+                    '而5k以上各档合计216笔写销、-739.67U（7天口径同向：1-5k写销7.8% vs 5k+ 20.6%）；'
+                    '这与本族此前"越深越安全"的假设相反，因此以1U独立臂验证，不改动任何既有臂的深度下限。'),
     'alpha149_participant_growth_v1': dict(
         notional_usd=2.0, max_concurrent_positions=2,
         excess_return_vs_arm='alpha149_size_informed_flow_v1',
@@ -1662,6 +1699,19 @@ def mechanisms(f):
         and liquidity is not None and liquidity >= 3000
         and liq_now is not None and prev_depth is not None and liq_now >= prev_depth)
 
+    # 36. Wave 28: the thin-depth tier that the 24h review measured as write-off free
+    #     (entry liquidity 1-5k: n=81 decisive, 0 write-offs, +118.64U) while every
+    #     deeper bucket carried 216 write-offs for -739.67U. The shared floor (1000U)
+    #     still binds, and every other measured protection is kept, so this is a new
+    #     archetype test rather than a loosening of an existing arm.
+    out['thin_depth_tier'] = bool(
+        pool_age is not None and 1800 <= pool_age <= 10800
+        and liquidity is not None and 1000 <= liquidity < 5000
+        and fdv_liq is not None and 1.0 <= fdv_liq <= 20.0
+        and price_now and prev_price and price_now >= prev_price
+        and liq_now is not None and prev_depth is not None and liq_now >= prev_depth * .98
+        and buy_share is not None and buy_share >= .5)
+
     # 34. Wave 26: the open band's own score-gated variant, evaluated after the
     #     score so the two arms form the same A/B as wave 24 but on the newly
     #     reachable tier (62.2% of observed frames instead of 0.5%).
@@ -1924,6 +1974,11 @@ RULES = {
     'participant_breadth': '参与广度/低捆绑代理：5分钟"独立买家数÷买笔数" ≥0.6（每笔买入来自不同钱包的比例），'
                            '买盘占比≥60%、深度≥3000U 且不流失。该比值低意味着少数钱包反复买入'
                            '（捆绑/自成交的代理信号），但它不是钱包簇证据。',
+    # wave 28
+    'thin_depth_tier': '薄深池档：池龄30-180分钟、原池深度 1000-5000U（共享硬底线之上）、FDV/深度1-20、'
+                       '价格不下跌、深度不流失、买盘占比≥50%。依据：24小时复盘显示入场深度1-5k档 n=81 判定、'
+                       '0 写销、合计 +118.64U，而 5k 以上各档合计 216 笔写销、-739.67U；'
+                       '这是与既有"越深越安全"假设相反的新形态，故以 1U 独立额外臂验证。',
     # wave 23
     'alpha149_trend_break': '结构破坏退出：30秒速度为负 且 回撤≥12% 且 笔数不再扩张 且 价格趋势拟合R²<0.35'
                             '（四项必须真实存在，缺失不推断）同时成立才退出。',
