@@ -1732,6 +1732,19 @@
       "next": "1) 观察 12-24 小时：注入/录取速率是否达到设计值（约 32 次/小时），被投放代币是否稳定拿到 ~30 帧，以及这些代币进入 entry 判断层的比例（同流动性分档下与被标记但未投放、以及未标记代币对比）。2) 持有人通道恢复后，先积累数据再评估其预测力（当前定义是研究用 shadow，decision_eligible=False，不进入交易决策）。3) 仍未决：观察面覆盖率取舍（dense ready pool 仅占 ready pool 约 10-15%），以及同代币并发上限是否从 shadow 转为强制。4) 结构/动量类新增臂的 A/B 样本仍不足（paired_arm_ab 阈值 20/边）。",
       "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
+    },
+    {
+      "id": "20260912-round110-concurrency-cap-floor-eight",
+      "title": "第110轮：**用户授权**——每臂并发上限低于 8 的全部提到 8（既有策略一并修改）；224 条臂生效，另有 205 条本就没有该字段（=无上限），按字面指令未动并单独列出待确认",
+      "recorded_at": "2026-09-12T14:00:00Z",
+      "problem": "此前讨论\"同币并发上限\"时确认：系统只有**按臂**的 `entry_filter.max_concurrent_positions`，没有任何跨臂的代币级上限。用户据此指示：\"如果每臂自己的上限小于8，则设置为8。所有策略都要修改。\"这直接触及\"严禁修改现有策略\"的冻结约束，属于对既有策略参数的显式授权修改。",
+      "change": "src/memetrader/store.py：新增类常量 `CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR = 8`，并在`chain_meme_trader_effective_definition_from_connection()`（**生效定义**的组装处）对每条 policy 执行：若显式 `entry_filter.max_concurrent_positions < 8` 则提升为 8，同时在 policy 上写入 `concurrency_cap_revision`（含 registered / effective / authorized_at / basis / registered_behavior_contract_hash），并按既有先例（entry_chase_budget_fraction 的修正）**重算行为指纹**，使运行期哈希仍准确描述该臂的真实行为；定义顶层写入 `concurrency_cap_floor` 汇总标记。重算结果按 (version, arm_id, 注册值) 记忆化，因为生效定义在入场热路径上被反复重建。**没有该字段的臂一律不动**：缺字段等于\"无上限\"，不属于\"上限小于8\"，把它钉成 8 是收紧而非提升。",
+      "rationale": "为什么放在\"生效定义\"层而不是改台账或改 441 条构造函数：① 台账 `chain_meme_trader_policy_additions` 由触发器禁止 UPDATE/DELETE，历史注册必须保持不可变；② 生效定义是所有消费者的唯一入口（入场闸门、pending 限额、UI），一处生效即覆盖全部 441 条臂与未来新增；③ 改动可见、可逆：每条受影响臂都带原始值与授权依据，删除该归一化即恢复原行为；④ 行为指纹随之上移，避免\"哈希说 2、实际按 8 运行\"的审计裂缝。",
+      "validation": "改动前实测（当前 epoch 生效定义）：无上限 205 条、cap=1 共 5 条、cap=2 共 145 条、cap=4 共 74 条、cap=8 共 12 条 → **低于 8 的共 224 条**。改动后：cap=8 共 **236** 条、低于 8 的 **0** 条、带 `concurrency_cap_revision` 标记 **224** 条、顶层标记 `floor=8 raised_policies=224`。新增 6 项测试（提升、恰好等于/高于 8 不动、缺字段不动、注册行与冻结定义零改动且重复重建不累积、指纹随上限重算、顶层标记汇总）全绿；生效定义相关回归集（strategy_explainability / funding_epoch / final_v002_funding_epoch / resource_bound_store / audit_strategy_wiring / whipsaw_guard / cost_coverage_scaleout）在**改动前后失败集合完全一致**（仅 1 项既有失败 test_depleted_account_stops_idle_snapshots_but_keeps_final_account）。部署：19:52:41 重启（PID 46496/42248，11:52:53Z），`kv[runtime-loaded-manifest]` 中 store.py 哈希 a5d95868e1958cbe 与磁盘一致，441 条臂、definition_version 未变、paper/live.enabled=false 未变。",
+      "scope": "src/memetrader/store.py（新增 1 个类常量、1 个模块级记忆化字典、1 段生效定义归一化）、tests/test_concurrency_cap_floor.py（新增 6 项）。未改动任何策略源码、注册台账、资金周期或已有成交。按用户指令，本轮对既有策略的实际行为产生了影响（224 条臂的并发上限由 1/2/4 变为 8）。",
+      "next": "1) 待用户确认：另有 **205 条臂根本没有该字段（即无上限）**，按字面指令未改动；若要求\"所有策略一律为 8\"，需另行指示（那是收紧这 205 条臂）。2) 影响面量化：224 条臂新增 1,201 个并发仓位槽位，全部打满时名义增量约 3,528U；部署时这 224 条臂实际只持有 5 个仓位（0.3%），因此上限本身不是当前的开仓瓶颈，后续需观察\"上限放开后开仓数是否真的上升\"，以区分\"受上限抑制\"与\"受信号/现金抑制\"。3) 观察期风险：上限放开可能加剧**单币堆叠**（同一信号被更多臂/同臂多笔承接），与仍在影子观测中的\"代币级并发上限\"提案直接相关；若写销集中度上升，应优先回头处理代币级上限。",
+      "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
     }
   ]
 }
