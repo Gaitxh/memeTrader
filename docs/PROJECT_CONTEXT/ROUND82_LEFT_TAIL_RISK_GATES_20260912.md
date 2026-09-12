@@ -34,40 +34,51 @@ Supporting arithmetic over the same 6 hours: 1,678 settled positions, 4,717.8U o
 **-1,255.7U realised**, of which the round-trip friction implied by that turnover is **393.2U
 (31%)**. Mean hold 16.1 minutes.
 
-## 2. Two pool-death risk features replicate
+## 2. Pool-death risk features, measured at the TOKEN level
 
-Over 24h, 3,261 settled positions of which 360 were written off:
+Position-level write-off rates are inflated by crowding: one dying pool carries 40+ arms, so a
+"30% write-off rate" can be 20 tokens. The correct unit is the token, and the earlier numbers in
+this section were re-done at that unit before the wave was justified. Over 24h there were **144
+tokens traded and 22 tokens with at least one write-off — a base rate of 15.3%**.
 
-| grouping | pool-death rate |
-| --- | --- |
-| **chain** bsc | **30.4%** (275/906) |
-| chain solana | 3.9% (85/2,171) |
-| chain robinhood | 0.0% (0/184) |
-| **entry liquidity 1,000-5,000** | 0.0% (0/70) |
-| entry liquidity 5,000-20,000 | 14.1% (82/582) |
-| entry liquidity 20,000-100,000 | 18.2% (273/1,499) |
-| **entry liquidity >= 100,000** | **0.5%** (5/1,088) |
-| BSC 20k-100k, entry buy share < 0.50 | **0.0%** (0/69) |
-| BSC 20k-100k, entry buy share >= 0.70 | **41.3%** (78/189) |
+| gate | tokens | dead | token-level death rate |
+| --- | --- | --- | --- |
+| **chain = bsc** | 47 | 19 | **40.4%** |
+| chain = solana | 88 | 3 | 3.4% |
+| chain = robinhood | 9 | 0 | 0.0% |
+| entry depth < 5,000 | 9 | 0 | 0.0% |
+| entry depth 5,000-20,000 | 28 | 9 | 32.1% |
+| entry depth 20,000-100,000 | 59 | 12 | 20.3% |
+| **entry depth >= 100,000** | 26 | 1 | **3.8%** |
+| **non-bsc AND depth >= 100,000** | 24 | 1 | **4.2%** |
+| entry buy share < 0.50 | 12 | 2 | 16.7% |
+| entry buy share >= 0.70 | 48 | 9 | 18.8% |
+| bsc AND depth 20k-100k | 28 | 10 | 35.7% |
 
-Both the chain split (30.4% versus 3.9%) and the deep-pool result (0.5%) reproduce measurements
-taken a day earlier on this database, so they are treated as replicated rather than as one day's
-noise.
+Two gates survive the token-level control: **chain = BSC (40.4% against a 15.3% base, 19 of 47
+tokens)** and **entry depth >= 100k (3.8%, 1 of 26 tokens)**; together 4.2%. The BSC write-off line
+alone is -790U, **54% of the whole 24h loss of -1,458.7U**.
 
-**Rejected by the controls:** entry turnover. Pooled, dead positions show 5.9x the median turnover
-of survivors (0.542 versus 0.092) — but inside BSC the death rate is flat across turnover
-(22.0 / 33.3 / 34.6 / 30.7 / 32.3%) and inside the 20k-100k band it is non-monotone
-(27.0 / 22.1 / 4.5 / 14.2 / 19.2%). The pooled difference was chain composition. This is the
-second time this session that a pooled entry effect dissolved under the controls, and the second
-time it was not built. (Inside Solana alone there is one residual signal worth watching:
-turnover >= 0.8 dies at 11.9% against 0.0% for the 1,436 lower-turnover Solana positions.)
+Three claims were retracted during this round's own checks, and they are recorded because each one
+would have justified an arm:
+
+- **entry buy share as a risk gate** — position-level it looked monotone (0.0% below 0.50, 41.3%
+  above 0.70 inside BSC 20k-100k), but at token level it is 16.7% versus the 15.3% base. It stays
+  only as a shared protective condition inherited from wave 41, not as a validated gate.
+- **Solana high-turnover deaths** — position-level 11.9% versus 0.0% looked like a large within-chain
+  effect, but all 94 Solana write-off positions come from **three tokens** (48, 37 and 9 positions,
+  entries at turnover 3.24, 4.97 and 0.90). At token level Solana dies at 3.4%. Dropped.
+- **entry turnover as a risk gate** — pooled, dead positions show 5.9x the median turnover of
+  survivors (0.542 versus 0.092), but inside BSC the death rate is flat across turnover
+  (22.0 / 33.3 / 34.6 / 30.7 / 32.3%). That was chain composition, and it is the second time this
+  session a pooled entry effect dissolved under controls.
 
 ## 3. Wave 42: two arms aimed at the left tail (312 -> 314)
 
 | arm | kind | gate |
 | --- | --- | --- |
-| `alpha149_deep_pool_flow_v1` | `deep_pool_flow` | the wave-41 flow carrier AND depth >= 100,000U |
-| `alpha149_nonbsc_flow_v1` | `nonbsc_flow` | the same carrier AND chain != bsc (an absent chain is NOT treated as non-BSC) |
+| `alpha149_deep_pool_flow_v1` | `deep_pool_flow` | the wave-41 flow carrier AND depth >= 100,000U (token-level death 3.8% against a 15.3% base) |
+| `alpha149_nonbsc_flow_v1` | `nonbsc_flow` | the same carrier AND chain != bsc (token-level death 40.4% for BSC against 3.4% for Solana and 0.0% for Robinhood); an absent chain is NOT treated as non-BSC |
 
 Both keep the measured protective conditions (buy share >= .5, price not falling versus the previous
 frame, depth holding at >= 98%, a previous frame must exist) and the same contract as wave 41
