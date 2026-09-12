@@ -16,8 +16,8 @@ from memetrader import alpha149 as a149
 from memetrader import exits150
 
 
-def test_the_three_arms_exist_and_are_carrier_only():
-    assert len(exits150.EXIT_ARMS) == 3
+def test_the_arms_exist_and_are_carrier_only():
+    assert len(exits150.EXIT_ARMS) == 5
     for arm in exits150.EXIT_ARMS:
         assert arm in a149.EXIT_ARMS, arm
         # A carrier must NOT be an entry arm: the signal loop emits entries from SPECS only,
@@ -71,12 +71,24 @@ def test_the_ladder_is_reachable_given_the_measured_distribution():
         returns = [t["return"] for t in tiers]
         assert returns == sorted(returns), arm
         assert sum(t["fraction_of_remaining"] for t in tiers) <= 1.5, arm
-    # A moonbag must remain after the last tier so a runner is not fully sold.
-    for arm in exits150.EXIT_ARMS:
+    # Two designs, and the difference is deliberate and load-bearing:
+    #   partial-capture arms leave a moonbag so a runner is not fully sold;
+    #   full-capture arms sell out completely at the first tier.
+    # The v2 replay priced exactly this factor: of the 241 positions that touched +15% econ,
+    # 186 finished negative, so the 50% left riding is what round-trips.
+    partial = [a for a in exits150.EXIT_ARMS if "_bank" in a or "_widestop" in a]
+    full = [a for a in exits150.EXIT_ARMS if "_full" in a]
+    assert partial and full
+    for arm in partial:
         remaining = 1.0
         for tier in exits150.OVERRIDES[arm]["take_profit"]:
             remaining *= 1.0 - tier["fraction_of_remaining"]
         assert remaining > 0.0, arm
+    for arm in full:
+        tiers = exits150.OVERRIDES[arm]["take_profit"]
+        # A single tier that sells the whole remaining position, and nothing after it.
+        assert len(tiers) == 1, arm
+        assert tiers[0]["fraction_of_remaining"] == 1.0, arm
 
 
 def test_the_stop_moved_outside_the_measured_noise():
@@ -90,10 +102,12 @@ def test_the_stop_moved_outside_the_measured_noise():
         assert stop > -0.90, (arm, "still a stop, not an unbounded hold")
 
 
-def test_the_three_arms_differ_in_exactly_one_respect_each():
+def test_the_arms_differ_in_exactly_one_respect_each():
     bank15 = exits150.OVERRIDES["exit150_bank15_v1"]
     bank25 = exits150.OVERRIDES["exit150_bank25_v1"]
     widestop = exits150.OVERRIDES["exit150_widestop_v1"]
+    full15 = exits150.OVERRIDES["exit150_full15_v1"]
+    full25 = exits150.OVERRIDES["exit150_full25_v1"]
     # bank15 vs bank25: the first-tier level is the only difference in the ladder.
     assert bank15["take_profit"] != bank25["take_profit"]
     assert bank15["hard_stop_return"] == bank25["hard_stop_return"]
@@ -101,6 +115,19 @@ def test_the_three_arms_differ_in_exactly_one_respect_each():
     # bank15 vs widestop: the stop width is the only difference in risk.
     assert bank15["take_profit"] == widestop["take_profit"]
     assert bank15["hard_stop_return"] != widestop["hard_stop_return"]
+    # The capture pair: level held fixed, capture fraction the only difference.
+    assert full15["take_profit"][0]["return"] == bank15["take_profit"][0]["return"]
+    assert full15["take_profit"][0]["fraction_of_remaining"] == 1.0
+    assert bank15["take_profit"][0]["fraction_of_remaining"] == 0.50
+    assert full25["take_profit"][0]["return"] == bank25["take_profit"][0]["return"]
+    assert full25["take_profit"][0]["fraction_of_remaining"] == 1.0
+    # Everything except the ladder must be identical inside each pair, so that any forward
+    # difference is attributable to the capture fraction alone.
+    for full, bank in ((full15, bank15), (full25, bank25)):
+        for field in ("hard_stop_return", "trailing_activate_return", "trailing_drawdown",
+                      "max_hold_minutes", "notional_usd", "max_concurrent_positions",
+                      "trajectory_exit", "observer_only", "decision_eligible"):
+            assert full[field] == bank[field], (field, full["name"], bank["name"])
 
 
 def test_apply_touches_only_its_own_arms():
