@@ -25,7 +25,11 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 WATCH_SECONDS = 900.0
-MAX_WATCHED = 240
+# The cap is what turns the flag rate into the approved acquisition budget. A flagged token keeps
+# a protected lease for 15 minutes, so 12 concurrent slots hand about 48 tokens per hour the dense
+# observation the entry layer needs - the "+14% requests, about 49 tokens per hour" the user
+# approved. A larger cap would protect most of the observer's ~35-token watch and starve rotation.
+MAX_WATCHED = 12
 MID_POOL_MIN_LIQUIDITY = 20_000.0
 MID_POOL_MIN_BUY_SHARE = 0.6
 SMALL_POOL_MAX_LIQUIDITY = 20_000.0

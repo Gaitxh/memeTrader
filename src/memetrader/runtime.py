@@ -966,6 +966,11 @@ def resolve_watchlist_heartbeat_account(
 
 
 TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
+# Frames a mover-watch token may collect before its lease protection stops. 30 frames over a
+# 15-minute window is one observation every 30 seconds, which is twice the cadence the entry
+# layer's 60-second double-evaluation rule needs, and bounds the extra acquisition to the
+# approved increment. Measured uncapped: 60 observations in 10 minutes and about +38% volume.
+MOVER_FRAME_TARGET = 30
 
 
 def _browser_bridge_url_host(value: Any) -> tuple[bool, str]:
@@ -7605,6 +7610,27 @@ class Runtime:
         protected.update(item['token_id'] for item in getattr(getattr(store, '_preentry_safety', None), 'pending', {}).values())
         protected.update(key[0] for key in getattr(self, '_cohort_pending', {}))
         protected.update(key for key, until in getattr(store, '_pattern_ready_until', {}).items() if until > current)
+        # MOVER WATCH-LIST (measured 2026-09-12): a protected lease is not released or replaced,
+        # so a flagged token keeps accumulating frames for its 15-minute window instead of being
+        # rotated out after one observation. The observer already delivers 20-27s spacing; what it
+        # did not do was hold on to a token long enough for the entry layer's 60-second
+        # double-evaluation rule to be satisfiable. Protection stops at MOVER_FRAME_TARGET frames,
+        # which is what bounds the spend to the approved increment: measured uncapped, a protected
+        # token took 60 observations in 10 minutes (about 6x the requirement and about +38% of the
+        # whole acquisition volume), while 30 frames per token over 12 concurrent 15-minute windows
+        # is about +13%.
+        _mover_registry = getattr(self, '_mover_watchlist', None)
+        if _mover_registry is not None:
+            try:
+                _watch_now = getattr(self, '_pattern_watch', {}) or {}
+                for _token in _mover_registry.active(current):
+                    _item = _watch_now.get(_token)
+                    if _item is None:
+                        continue
+                    if int(_item.get('frame_count') or 0) < MOVER_FRAME_TARGET:
+                        protected.add(_token)
+            except Exception:
+                pass
         self._lease145_protected=set(protected)
         strong_protected=set(protected)
         if not hasattr(self,'_leases145_restored'):

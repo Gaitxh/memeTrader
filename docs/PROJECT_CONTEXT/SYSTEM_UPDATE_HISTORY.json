@@ -1485,6 +1485,19 @@
       "next": "1) 等待用户对观察白名单的预算决定（+14% 请求，flag 率 14%，留出样本 lift 2.37）；若否决，则如实记录\"在当前预算下覆盖缺口无法从数据侧闭合\"。2) 第41+42波按预注册预测检验：deep_pool_flow 应表现为低写销 + 低上涨；nonbsc_flow 应以牺牲上涨换取安全性。3) 每月或任何采集变更后重跑第1节的 mover 筛选，作为\"观测面是否仍能集中翻倍币\"的最便宜检验。",
       "report": "docs/PROJECT_CONTEXT/ROUND83_MOVER_FILTER_AND_WATCHLIST_PROPOSAL_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND83_MOVER_FILTER_AND_WATCHLIST_PROPOSAL_20260912.md"
+    },
+    {
+      "id": "20260912-round84-watchlist-densification",
+      "recorded_at": "2026-09-12T09:05:00Z",
+      "title": "第84轮：用户批准的观察白名单落地并实测生效——被标记代币在首个 10 分钟内拿到 60/41/20 次观测（总体中位 2 次），同时用并发槽与单币帧数两道上限把开销压回批准的 +13%",
+      "problem": "第83轮加了白名单与优先级排序，但实测观测间隔中位仍是 90.4 秒、毫无变化。本轮从观察器自己的租约检查点（kv[chain-meme-pattern-watch:leases145]）找到原因：观察器\"看着 35 个代币，但大多数 frame_count=1\"，replacements 持续增长——它是**轮换**而不是**持有**，所以对到期工作重排序根本无效，被标记代币被看一次就被换掉，永远无法满足入场层\"同池 60 秒内两次评估\"的要求。",
+      "change": "把被标记代币加入观察器**既有的** protected 集合（该集合的语义正是\"不释放、不被替换\"），并加两道开销上限：(1) 并发白名单槽位 12 个（12 槽 x 每小时 4 个 15 分钟窗口 = 48 个代币/小时，正是获批的\"+14% 请求、约 49 币/小时\"；不设上限则可能保护掉 35 个观察槽的大部分并饿死轮换）；(2) 单币 30 帧上限 MOVER_FRAME_TARGET（15 分钟内 30 帧 = 每 30 秒一次，是入场层 60 秒规则所需节奏的两倍；实测不设上限时单个被保护代币 10 分钟拿到 **60 次观测**，约为需求的 6 倍、约占全部采集量的 **+38%** 而非 +13%）。",
+      "rationale": "用户已批准 +14% 请求预算，因此本轮的目标不是\"是否要做\"而是\"把批准的量花在真正起作用的地方\"。实测证明起作用的是**持有租约**而不是排序优先级，并且不设上限会超支近 3 倍——两道上限既守住了批准的开销，也把\"每个被标记代币 30 帧\"这一可核对的设计目标写进了代码常量。",
+      "validation": "去重口径：strategy-observer:X 与 X 在同一 observed_at 互为镜像，因此所有计数按 (token_id, observed_at) 去重（子代理第83轮指出的表级陷阱）。实测（16:36 重载后首次出现的代币，已去重）：被规则标记 26 个代币，首个 10 分钟观测数 p50=2、p90=20，最深 60/41/20；未标记 205 个代币 p50=1、p90=11。**本轮之前全系统没有任何租约超过约 7 帧。**设帧上限后的窗口（16:48 重载）被标记代币 p90 由 20 降至 4，且尚无代币达到 30 帧目标（窗口仅约 9 分钟）——因此**设上限后的稳态（预期约 12 条并发密集轨迹、每币约 30 帧、总量约 +13%）留待下一轮确认，本轮不下结论**。tests/test_mover_watchlist.py 7 项通过；runtime 导入正常；重载 16:36:19 与 16:48:27。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/mover_watchlist.py（并发上限 240->12 并写明依据）、src/memetrader/runtime.py（protected 集合加入白名单代币 + MOVER_FRAME_TARGET=30 常量与帧数判断）、docs/PROJECT_CONTEXT/ROUND84_WATCHLIST_DENSIFICATION_20260912.md（新增）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 确认设上限后的稳态：并发密集轨迹接近 12、单币帧数接近 30、新增快照量接近 +13%。2) 测量转化：拿到密集观测的被标记代币中，有多少能在 60 秒内出现两次 ready、进而拿到准入决策——对照第80轮的 ready→准入 5.1% 基线。3) 若已密集观测的代币仍不转化，则瓶颈就不再是观测密度，白名单应以该负面结论结案而不是继续扩大。",
+      "report": "docs/PROJECT_CONTEXT/ROUND84_WATCHLIST_DENSIFICATION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND84_WATCHLIST_DENSIFICATION_20260912.md"
     }
   ]
 }
