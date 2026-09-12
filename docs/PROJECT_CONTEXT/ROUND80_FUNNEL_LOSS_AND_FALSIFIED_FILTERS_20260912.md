@@ -147,6 +147,36 @@ positions, the pooled **within-token** difference is **-0.009** (median +0.008),
 **10 of 19** tokens. The apparent edge is a token-selection artifact — a turnover filter would
 reweight which tokens get traded, not improve timing. **No arms were added for it.**
 
+## 7b. The opportunity ceiling: the movers exist and the system enters 4.8% of them
+
+The metric that decides everything else. Over the last 5 hours, 52,765 snapshots covered 10,028
+distinct tokens; 1,712 of them have >=5 observations, so their first hour is actually measurable.
+Measuring `max(price within 1h of first observation) / first price`:
+
+| threshold | tokens | share of measurable | entered by the system | share of qualifying tokens entered |
+| --- | --- | --- | --- | --- |
+| >= 1.5x | 309 | 18.0% | 12 | 3.9% |
+| >= 2x | 189 | 11.0% | 9 | **4.8%** |
+| >= 3x | 100 | 5.8% | 6 | 6.0% |
+| >= 5x | 49 | 2.9% | 3 | 6.1% |
+
+The system entered 37 distinct tokens in that window. 9 of them (24.3%) reached 2x, against an
+11.0% base rate — so the entry machinery **does** carry information (about 2.2x lift) — but it
+covers only **4.8%** of the tokens that actually doubled, and 75.7% of its entries never reach 2x.
+
+This matches the peak-capture measurement on the other side: pooled by entry mechanism over 48h,
+every mechanism with a usable sample has a **median peak of 0.96-1.14x stake**, and only 3.8-6.2%
+of positions ever reach 2x stake. So the binding constraint is not the exit rule and not a single
+entry-time scalar; it is that the system almost never holds a token while it moves, because it
+observes it 6 times an hour (section 2) and requires two observations inside 60 seconds.
+
+An independent exit review (`data/research/exit_review_20260912.md`, token-clustered 90% CIs,
+design effect ~4.1x) reaches the same place from the other direction: hard stop -34.97% ROI with
+1.5% win rate, trailing exit +29.37% with 86.2%, every one of the 20 named exit-variant groups
+individually uninterpretable at 2-57 positions, and **64.5% of hard-stop dollars spent on
+positions that never rose above 1.0x at all**. The median position peaks at 1.08x entry and only
+6.6% ever reach 2x.
+
 ## 8. What this round says to do next
 
 1. **Nothing in the exit layer is the dominant term** (section 5) and **friction is 58%** of the
