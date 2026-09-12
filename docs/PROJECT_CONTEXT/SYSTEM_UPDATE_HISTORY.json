@@ -1269,6 +1269,20 @@
       "loaded_at": "2026-09-12T03:40:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND08_ERROR_TRIAGE_AND_ANALYSIS_LOAD_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND08_ERROR_TRIAGE_AND_ANALYSIS_LOAD_20260912.md"
+    },
+    {
+      "id": "20260912-round09-deadpool-exit-arms",
+      "recorded_at": "2026-09-12T04:15:00Z",
+      "title": "第9轮：死池前兆退出额外臂对（第29波，278→280）+ 证据链收口",
+      "problem": "第7轮定位到真实失血点是写销（近60分钟92笔-304.0U vs 普通平仓296笔-64.98U），且路径反事实证明放宽/延后止损几乎无收益（延迟60分钟仅+0.69$/21笔，硬止损回本率1.7%）。需要一个可前向验证的'提前离开枯竭池'实验，且不得修改任何现有策略。",
+      "change": "第29波新增2条额外臂：alpha149_deadpool_open_band_v1（入场=survivable_open_band，1U，60分钟，去掉价格止损仅保留-90%灾难兜底，改用本族既有 alpha149_depth_decay 深度衰减退出：30秒深度<=-15% 且换手<0.1 且深度保留<=0.8）与其同入场对照 alpha149_deadpool_control_v1（1U，60分钟，默认-20%止损与+30%→15%追踪，不声明深度衰减退出）。两臂同入场、同规模、同时限，唯一差别是死池前兆退出；复用既有退出种类，未新增或改写共享引擎逻辑，未改动任何现有臂。",
+      "rationale": "在'放宽止损无效'与'写销主导亏损'两条证据之间，唯一有希望通过的方向是更早识别枯竭池，而不是更宽容地持有。做成同入场 A/B 才能在样本足够后干净地判定该特征是否够早、够准。",
+      "validation": "注册 278->280 且 ledger_unchanged=true；两臂参数核对通过（处理臂 hard_stop=-0.90 且 trajectory_exit=alpha149_depth_decay，对照臂 hard_stop=-0.20 且无 trajectory_exit）；tests/test_alpha149.py 与 tests/test_alpha149_wave2425.py 全通过（116条臂）；运行进程已重载，重载后 survivable_open_band 就绪38次、open_band_scored 22次；paper 与 live.enabled=false 不变。",
+      "scope": "修改：src/memetrader/alpha149.py（文件末尾以原子追加方式加入第29波 SPECS/OVERRIDES/RULES 并重建 ALL_ARMS/KINDS，不改动既有臂定义）；新增报告 docs/PROJECT_CONTEXT/ROUND09_DEADPOOL_EXIT_ARMS_20260912.md。待办：两臂样本累积、thin_depth_tier 可达性诊断、尘埃守卫计数跟踪、诊断负载改副本。",
+      "commit": "",
+      "loaded_at": "2026-09-12T04:05:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND09_DEADPOOL_EXIT_ARMS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND09_DEADPOOL_EXIT_ARMS_20260912.md"
     }
   ]
 }

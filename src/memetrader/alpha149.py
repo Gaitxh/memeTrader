@@ -2304,3 +2304,40 @@ def _percentile(values, quantile):
         return ordered[lower]
     weight = position - lower
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+# ---- wave 29: dead-pool precursor exit, appended as an extra arm pair ----
+# Measured: write-offs are the loss centre (92 positions for -304.0U in one hour while
+# 296 ordinary closes totalled -64.98U). The family already owns the closest observable
+# precursor - `alpha149_depth_decay` (30s depth <= -15%, turnover < 0.1, retention <= 0.8) -
+# so this wave puts it on the highest-supply measured entry, with a byte-identical
+# same-entry control, instead of changing any existing arm's exit.
+SPECS.update({
+    'alpha149_deadpool_open_band_v1': ('survivable_open_band', '\u6b7b\u6c60\u524d\u5146\u9000\u51fa\u00b7\u5f00\u653e\u5e26(1U)', 60),
+    'alpha149_deadpool_control_v1': ('survivable_open_band', '\u6b7b\u6c60\u524d\u5146\u5bf9\u7167\u00b7\u540c\u5165\u573a(1U)', 60),
+})
+OVERRIDES.update({
+    'alpha149_deadpool_open_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deadpool_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6b7b\u6c60\u524d\u5146\u9000\u51fa\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u5165\u573a\u4e0e open_band \u76f8\u540c\uff0c'
+                    '\u53bb\u6389\u4ef7\u683c\u6b62\u635f\uff08-90%\u4ec5\u707e\u96be\u515c\u5e95\uff09\uff0c\u6539\u7528\u5df2\u6709\u7684\u6df1\u5ea6\u8870\u51cf\u63d0\u524d\u9000\u51fa\uff1a'
+                    '30\u79d2\u6df1\u5ea6\u6536\u7f29\u226515% \u4e14 \u6362\u624b<0.1 \u4e14 \u6df1\u5ea6\u4fdd\u7559\u22640.8\u3002'
+                    '\u4f9d\u636e\uff1a\u8fd160\u5206\u949f\u5199\u9500 92 \u7b14 -304.0U\uff0c\u800c\u666e\u901a\u5e73\u4ed3296\u7b14\u4ec5 -64.98U\uff1b'
+                    '\u5199\u9500\u8def\u5f84\u662f\u5f53\u524d\u4e3b\u8981\u5931\u8840\u70b9\uff0c\u800c\u6b62\u635f\u5bbd\u7a84\u5df2\u88ab\u8def\u5f84\u53cd\u4e8b\u5b9e\u8bc1\u660e\u65e0\u6548\u3002'),
+    'alpha149_deadpool_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deadpool_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6b7b\u6c60\u524d\u5146\u5bf9\u7167\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u4e0e\u524d\u4e00\u6761\u5b8c\u5168\u540c\u4e00\u5165\u573a\uff0c'
+                    '\u4fdd\u7559\u7cfb\u7edf\u9ed8\u8ba4 -20% \u6b62\u635f\u4e0e +30%\u219215% \u8ffd\u8e2a\uff0c\u4e0d\u58f0\u660e\u6df1\u5ea6\u8870\u51cf\u9000\u51fa\uff0c'
+                    '\u7528\u4e8e\u628a\u201c\u63d0\u524d\u79bb\u5f00\u6b7b\u6c60\u201d\u7684\u6548\u5e94\u4e0e\u5165\u573a\u672c\u8eab\u5206\u5f00\u3002'),
+})
+RULES.update({
+    'survivable_open_band': RULES['survivable_open_band'] +
+        ' \u672c\u6ce2\u5728\u6b64\u5165\u573a\u4e0a\u65b0\u589e\u201c\u6b7b\u6c60\u524d\u5146\u9000\u51fa\u201d\u989d\u5916\u81c2\u4e0e\u540c\u5165\u573a\u5bf9\u7167\u81c2\uff08\u7b2c29\u6ce2\uff09\u3002',
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
