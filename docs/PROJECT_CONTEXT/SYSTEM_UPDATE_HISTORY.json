@@ -1654,6 +1654,19 @@
       "next": "1) 预算验收闭环的最后一步：按 admit_mover_reserved 累计保留纳管代币的观测增量（纳管数已在 kv 中可查，第97轮验证读到 3）。2) 覆盖率取舍仍待用户决定（密集 ready 池占比约 10-15%，随重载波动）。3) 等密度检验（flagged+dense vs unflagged+dense）待样本足够。",
       "report": "docs/PROJECT_CONTEXT/ROUND92_PER_EVALUATION_METRIC_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND92_PER_EVALUATION_METRIC_20260912.md"
+    },
+    {
+      "id": "20260912-round100-reserved-slot-fill-rate-under-delivered",
+      "title": "第100轮：保留槽位**严重未填满**——10 分钟只纳管 1 个（设计预期约 5 个/10 分钟）；原因指向保留逻辑挂在\"拒绝路径\"而非\"候选路径\"",
+      "recorded_at": "2026-09-12T11:10:00Z",
+      "problem": "第96-99轮把保留名额的计数与代币名单落到 kv 后，本轮核对它是否按设计速率被填满。实测（重载 18:23:42 后，10 分钟窗口）：mover_reserved_admissions=**1**、mover_watching=24；唯一被纳管的 robinhood:0x01253ef2... 在 10:25:30Z 进入，到 10:34:22Z 仍只有 **1 次观测**。设计预期是 8 个保留槽位、每小时 4 轮租约 ≈ **32 个/小时（约 5 个/10 分钟）**，实际约 6 个/小时，仅为预期的五分之一；而被纳管的那一个也没有获得密集观测。",
+      "change": "本轮不改动源码：先确立\"保留槽位未被填满\"这一事实，并把原因假设写成下一轮的核对项，而不是在上下文将尽时改动观察集纳管路径。",
+      "rationale": "第89轮把保留纳管挂在纳管循环的 skip_bucket_full 分支上——也就是**只有当一个被标记代币已经作为候选走到该分支、且其 (chain,bucket) 已满时**才会触发。若被标记代币很少进入候选流（候选流主要由发现路径的年轻池构成），保留逻辑就几乎不会触发。这与\"分钟级只有 1 次\"的观测一致，但 n 很小，因此只作为**主要假设**而非结论。",
+      "validation": "读数来自 kv[chain-meme-pattern-watch]（第96/99轮落地的字段）：10:33:41Z mover_reserved_admissions=1；10:34:22Z 仍为 1，tracked tokens=1，被纳管代币 robinhood:0x01253ef2... observations=1。对照：同窗口内全系统观测 435 个代币/1,675 行，单币观测数 p50=1、p90=1、max=90，即密集观测确实存在，但不是保留槽位贡献的。结论按强度排序：(1) **事实**——保留槽位未被按设计速率填满，约 6 个/小时 vs 预期 32 个/小时；(2) **主要假设**——触发点挂在拒绝路径而非候选路径；(3) **未定**——被纳管代币只拿到 1 次观测，n=1 不足以判断保护是否生效。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "仅文档：docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动源码或配置。",
+      "next": "1) 核对主要假设：统计\"被标记代币进入纳管循环候选\"的次数 vs \"走到 skip_bucket_full 分支\"的次数；若前者远大于后者，说明保留逻辑的位置不对，应改为**在候选流中直接为被标记代币插入候选**，而不是等它被拒绝时再放行。2) 修正后复测三项：mover_reserved_admissions 的增速（目标约 32/小时）、被纳管代币的观测数（目标约 30 帧）、以及密集 vs 稀疏的间隔分布（第98轮口径）。3) 覆盖率取舍仍待用户决定（密集 ready 池占比约 10-15%）。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }
