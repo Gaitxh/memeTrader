@@ -62,6 +62,8 @@ AGE_RATE_RATIO_EQUIVALENT = 36.0 / 14.0  # 2.5714..., only for tests/documentati
 # one whose allowed drawdown shrinks as the hold extends.
 EARLY_STOP_MINUTES = 5.0
 EARLY_STOP_DISTANCE = .20
+TREND_BREAK_DRAWDOWN = .12
+TREND_BREAK_R2_MAX = .35
 TIME_DECAY_CAP = .30
 TIME_DECAY_SLOPE_PER_MINUTE = .006  # 30% at entry -> 12% after 30 minutes
 TIME_DECAY_FLOOR = .12
@@ -234,6 +236,21 @@ SPECS = {
     # wave 22: the same fix for the mechanisms still starved by strict rises.
     'alpha149_steady_mid_v1': ('survivable_steady_mid', '安全带中段·不跌即可', 30),
     'alpha149_confirmed_steady_v1': ('confirmed_steady', '确认式入场·不跌两步', 30),
+    # wave 23: the requested exit rebuild, added as EXTRA ARMS beside their own
+    # same-entry control - never as a change to an existing arm. The exit
+    # counterfactual (data/tmp/exit_counterfactual_20260912.md: 862 positions,
+    # 735 closed, sampled marks, 4%/4% friction) ranks the shipped -20% stop
+    # within ~3U of the best of 15 policies and puts the staged-TP + moonbag
+    # ladder LAST (-40U), because only 7.5% of positions ever reach +100% and
+    # 1.8% +200%. That is evidence against REPLACING the stop; it is not
+    # evidence about a ladder that runs beside it, at 1U, on the arm with the
+    # highest measured frame supply. Nothing here changes an existing contract.
+    'alpha149_moonbag_steady_v1': ('survivable_steady', '月亮袋阶梯·安全带1U', 60),
+    'alpha149_moonbag_control_steady_v1': ('survivable_steady', '月亮袋对照·同止损无阶梯1U', 60),
+    'alpha149_moonbag_merged_v1': ('merged_multi_setup', '月亮袋阶梯·合并入场2U', 60),
+    'alpha149_flow_fade_steady_v1': ('survivable_steady', '买盘衰减退出·安全带1U', 30),
+    'alpha149_time_stop20_steady_v1': ('survivable_steady', '20分钟时间止损·安全带1U', 20),
+    'alpha149_trend_break_steady_v1': ('survivable_steady', '结构破坏退出·安全带1U', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -250,6 +267,8 @@ EXIT_ARMS = {
     # wave 16: two stop schedules on the same frozen entry.
     'alpha149_early_stop_only_exit_v1': 'alpha149_early_stop_only',
     'alpha149_time_decay_stop_exit_v1': 'alpha149_time_decay_stop',
+    # wave 23: carrier for the structure/trend-break exit.
+    'alpha149_trend_break_exit_v1': 'alpha149_trend_break',
 }
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
@@ -281,6 +300,16 @@ WAVE9_ARMS = frozenset({
 # Arms that legitimately declare the opt-in exit guards; every other arm must
 # stay untouched by them.
 GUARD_ARMS = WAVE8_ARMS | {'alpha149_washout_reclaim_hold_v1'}
+
+# Wave 23 moonbag ladder. Fractions are of the REMAINING quantity, applied
+# sequentially by the shared evaluator, and are chosen so that the FIRST fill
+# alone recovers the principal net of friction (0.55 * 2.0 * 0.96 = 1.056x
+# stake), which is what flips `principal_recovered` and lets the runner trail.
+MOONBAG_TIERS = (
+    {'return': 1.0, 'fraction_of_remaining': .55},
+    {'return': 2.0, 'fraction_of_remaining': .44},
+    {'return': 4.0, 'fraction_of_remaining': .21},
+)
 
 # Per-arm sizing / exit overrides. Anything not listed keeps the family default
 # produced by dex_trajectory.policies (5U, max 2, hard stop -20%, trail 30/15).
@@ -789,6 +818,80 @@ OVERRIDES = {
         description='确认式入场·不跌两步（1U）：保留 wave13"先确认再买入（成交推迟一帧）"的意图，'
                     '但把"连续两次严格上涨"（实测2.7%帧斜率下约为0.07%的事件、ready=0）'
                     '改为"连续两次不下跌"，池子条件仍为实测存活带。'),
+    # ---- wave 23: the requested exit rebuild, as extra arms --------------------
+    # Every contract below is a NEW arm on an EXISTING frozen entry. The shared
+    # evaluator already implements all of them generically (take_profit tiers with
+    # fraction_of_remaining, exit_family='principal_lock_runner' which suppresses
+    # trailing until principal is actually recovered, runner_review_minutes,
+    # flow_grace_minutes/minimum_buy_ratio, zero_activity_grace_minutes,
+    # max_hold_minutes), so this wave declares contracts instead of editing the
+    # engine; no existing arm's fields are touched.
+    #
+    # Tier arithmetic (fractions are of the REMAINING quantity, sequentially):
+    #   +100%: sell 55%  -> 0.55*2*0.96 = 1.056x stake recovered in ONE fill, so
+    #          principal_recovered flips immediately and the runner high-water is
+    #          reset to the actual post-fill price.
+    #   +200%: sell 44% of the remaining 45% (0.198 of the original) -> 25.2% left.
+    #   +400%: sell 21% of the remaining 25.2% (5.3%) -> 20.0% left = the moonbag.
+    'alpha149_moonbag_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_moonbag_control_steady_v1',
+        take_profit=[dict(tier) for tier in MOONBAG_TIERS],
+        exit_family='principal_lock_runner', runner_review_minutes=30.0,
+        runner_epoch_after_partial=True,
+        hard_stop_return=-.35, trailing_activate_return=.30, trailing_drawdown=.30,
+        description='月亮袋阶梯（1U）：入场与 survivable_steady 完全相同，退出改为"2倍卖出55%一次性收回本金'
+                    '→3倍卖出剩余的44%→5倍卖出剩余的21%"，最终留下约20%月亮袋；'
+                    '本金收回前追踪被抑制（principal_lock_runner），收回后按+30%激活/回撤30%的宽松追踪跟随；'
+                    '30分钟仍未收回本金则按 runner_review 退出；-35%为灾难兜底。'
+                    '同入场对照臂 alpha149_moonbag_control_steady_v1 保有相同的-35%止损/宽松追踪/60分钟，'
+                    '但没有阶梯：两者之差就是阶梯本身。'),
+    'alpha149_moonbag_control_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_moonbag_steady_v1',
+        take_profit=[], hard_stop_return=-.35,
+        trailing_activate_return=.30, trailing_drawdown=.30,
+        description='月亮袋对照（1U）：与月亮袋臂同一入场、同一-35%灾难止损、同一宽松追踪(+30%→30%)与60分钟时限，'
+                    '但没有任何分批止盈、也不锁定本金，追踪从+30%起就可触发；'
+                    '用于把"阶梯+本金锁定"与"仅仅放宽止损和追踪"两个效应分开。'),
+    'alpha149_moonbag_merged_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_moonbag_control_steady_v1',
+        take_profit=[dict(tier) for tier in MOONBAG_TIERS],
+        exit_family='principal_lock_runner', runner_review_minutes=30.0,
+        runner_epoch_after_partial=True,
+        hard_stop_return=-.35, trailing_activate_return=.30, trailing_drawdown=.30,
+        description='月亮袋阶梯·合并入场（2U）：阶梯合同与 moonbag_steady 完全相同，'
+                    '入场换成 wave15/16 退出实验所用的同一冻结 merged_multi_setup 信号，'
+                    '使其可直接与已有的 alpha149_nominal_stop_control_v1（同入场、-20%止损、无阶梯、30分钟）对照。'),
+    'alpha149_flow_fade_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_steady_v1',
+        flow_grace_minutes=3.0, minimum_buy_ratio=.45, zero_activity_grace_minutes=5.0,
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='买盘衰减退出（1U）：入场与 survivable_steady 相同，'
+                    '但额外声明共享引擎早已支持、而本族此前从未使用的资金流衰减合同——'
+                    '入场3分钟后若5分钟买笔占比跌破45%（买压衰减）即退出，'
+                    '5分钟内买卖笔数合计为0（活动死亡）亦退出；止损与追踪保持-20%/+30%→15%。'
+                    '依据：家族当前唯一正收益的退出族是追踪与到期，'
+                    '而买盘衰减正是"信号衰减"的直接可观测代理。'),
+    'alpha149_time_stop20_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_steady_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='20分钟时间止损（1U）：入场、止损、追踪与 survivable_steady 逐字相同，'
+                    '只把最长持有从30分钟提前到20分钟，用于单独测量时间止损。'
+                    '对照事实：反事实回放中30分钟时限相对不限时约-27U、60分钟时限中性，'
+                    '因此这条臂的作用是检验"更早的时间止损是否只是提前实现亏损"。'),
+    'alpha149_trend_break_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_steady_v1',
+        trajectory_exit='alpha149_trend_break',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='结构破坏退出（1U）：入场与 survivable_steady 相同，去掉价格止损（-90%仅兜底），'
+                    '改用趋势结构判据：30秒价格速度为负 + 回撤已达12% + 笔数不再扩张 + '
+                    '价格趋势拟合 R²<0.35（必须真实存在，缺失不推断）同时成立才退出。'
+                    '这是"结构/趋势退出"的可实现形式：不是等价格触线，而是等趋势本身失效。'),
 }
 
 
@@ -1447,6 +1550,15 @@ def exit_reason(kind, f, opened_at, current):
                             TIME_DECAY_CAP - TIME_DECAY_SLOPE_PER_MINUTE * elapsed_minutes))
             if drawdown <= -limit:
                 return 'alpha149_time_decay_stop'
+    elif kind == 'alpha149_trend_break':
+        # Wave 23 structure/trend exit. All four readings must exist and agree;
+        # a missing trend fit is never read as a broken trend.
+        drawdown = _num(f.get('drawdown'))
+        r2 = _num(f.get('log_price_r2'))
+        if (velocity is not None and velocity < 0 and drawdown is not None
+                and drawdown <= -TREND_BREAK_DRAWDOWN and tx_ratio is not None
+                and tx_ratio < 1 and r2 is not None and r2 < TREND_BREAK_R2_MAX):
+            return 'alpha149_trend_break'
     return None
 
 

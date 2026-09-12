@@ -1204,3 +1204,188 @@ def test_new_exits_reject_stale_or_preopening_frames():
     assert alpha149.exit_reason("alpha149_liquidity_shock", early, opened, current) is None
     assert alpha149.exit_reason("alpha149_liquidity_shock", None, opened, current) is None
     assert alpha149.exit_reason("unknown_kind", feature(), opened, current) is None
+
+
+# --------------------------------------------------------------------------- #
+# 6. wave 23: the requested exit rebuild, as extra arms only
+# --------------------------------------------------------------------------- #
+
+def test_wave23_exit_arms_are_additive_beside_their_own_controls():
+    """Every requested exit is a NEW arm on an EXISTING frozen entry."""
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    # The ladder arm and its control differ ONLY in the ladder + principal lock.
+    ladder = policies["alpha149_moonbag_steady_v1"]
+    control = policies["alpha149_moonbag_control_steady_v1"]
+    assert alpha149.SPECS["alpha149_moonbag_steady_v1"][0] == "survivable_steady"
+    assert alpha149.SPECS["alpha149_moonbag_control_steady_v1"][0] == "survivable_steady"
+    for key in ("hard_stop_return", "trailing_activate_return", "trailing_drawdown",
+                "max_hold_minutes", "notional_usd"):
+        assert ladder[key] == control[key], key
+    assert ladder["take_profit"] and not control["take_profit"]
+    assert ladder["exit_family"] == "principal_lock_runner"
+    # The control keeps the family's inherited exit family (every alpha149 arm
+    # carries the template's value) and therefore takes no principal-lock branch.
+    assert control["exit_family"] != "principal_lock_runner"
+    assert "runner_review_minutes" not in control
+    # The 30-minute ladder review is the requested time stop on the runner.
+    assert ladder["runner_review_minutes"] == 30.0
+    assert ladder["runner_epoch_after_partial"] is True
+    # Its disaster stop is wider than the shipped -20% and never unlimited.
+    assert ladder["hard_stop_return"] == -.35
+    # The merged-entry ladder shares the wave-15 entry, so it is comparable to the
+    # existing nominal-stop control without touching it.
+    merged = policies["alpha149_moonbag_merged_v1"]
+    assert alpha149.SPECS["alpha149_moonbag_merged_v1"][0] == "merged_multi_setup"
+    assert merged["take_profit"] == ladder["take_profit"]
+    assert merged["exit_family"] == "principal_lock_runner"
+    assert policies["alpha149_nominal_stop_control_v1"]["hard_stop_return"] == -.20
+    assert policies["alpha149_nominal_stop_control_v1"]["take_profit"] == []
+
+
+def test_wave23_moonbag_tiers_recover_principal_in_one_fill():
+    """Tier 1 must clear the stake after 4% sell friction, or principal never locks."""
+    tiers = [dict(t) for t in alpha149.MOONBAG_TIERS]
+    assert [t["return"] for t in tiers] == [1.0, 2.0, 4.0]          # 2x / 3x / 5x
+    returns = [t["return"] for t in tiers]
+    fractions = [t["fraction_of_remaining"] for t in tiers]
+    assert returns == sorted(returns) and len(set(returns)) == len(returns)
+    assert all(0.0 < f <= 1.0 for f in fractions)
+    # First fill: fraction of the original position sold at the 2x rung, net of the
+    # frozen 4% sell slippage.
+    stake_recovered = fractions[0] * (1.0 + returns[0]) * (1.0 - 0.04)
+    assert stake_recovered >= 1.0
+    # Sequentially: the remainder after the last rung is the 10-20% moonbag.
+    remaining = 1.0
+    for fraction in fractions:
+        remaining *= (1.0 - fraction)
+    assert 0.10 <= remaining <= 0.20
+    assert alpha149.MOONBAG_TIERS is not None and len(alpha149.MOONBAG_TIERS) == 3
+    # The declared policy tiers are copies, not the shared tuple of dicts.
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    declared = policies["alpha149_moonbag_steady_v1"]["take_profit"]
+    assert declared[0] is not alpha149.MOONBAG_TIERS[0]
+    declared[0]["return"] = 99.0
+    assert alpha149.MOONBAG_TIERS[0]["return"] == 1.0
+
+
+def test_wave23_declares_the_uncrowded_flow_and_time_contracts():
+    """The signal-decay and time-stop arms use engine fields no alpha149 arm used."""
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    fade = policies["alpha149_flow_fade_steady_v1"]
+    assert alpha149.SPECS["alpha149_flow_fade_steady_v1"][0] == "survivable_steady"
+    assert fade["flow_grace_minutes"] == 3.0
+    assert fade["minimum_buy_ratio"] == .45
+    assert fade["zero_activity_grace_minutes"] == 5.0
+    assert fade["hard_stop_return"] == -.20 and fade["trailing_drawdown"] == .15
+    # The time stop changes exactly one field against the wave-21 steady arm.
+    steady = policies["alpha149_survivable_steady_v1"]
+    time_stop = policies["alpha149_time_stop20_steady_v1"]
+    assert time_stop["max_hold_minutes"] == 20 and steady["max_hold_minutes"] == 30
+    for key in ("hard_stop_return", "trailing_activate_return", "trailing_drawdown",
+                "notional_usd", "take_profit"):
+        assert time_stop[key] == steady[key], key
+    assert "flow_grace_minutes" not in steady or steady.get("flow_grace_minutes") is None
+    # No alpha149 arm declared the flow contract before wave 23.
+    others = [p for arm, p in policies.items()
+              if arm.startswith("alpha149") and arm != "alpha149_flow_fade_steady_v1"]
+    assert not any(p.get("flow_grace_minutes") for p in others)
+    assert not any(p.get("zero_activity_grace_minutes") for p in others)
+
+
+def test_wave23_trend_break_exit_needs_every_reading():
+    """Structure exit: falling velocity, real giveback, fading trades, broken fit."""
+    opened = datetime(2026, 9, 11, 0, 0, tzinfo=UTC)
+    current = datetime(2026, 9, 11, 0, 0, 45, tzinfo=UTC)
+
+    def broken(**over):
+        base = dict(drawdown=-0.15, log_price_r2=0.20,
+                    windows={"30": _w(velocity=-0.01, tx=0.6)})
+        base.update(over)
+        return feature(**base)
+
+    assert alpha149.exit_reason("alpha149_trend_break", broken(), opened, current) == \
+        "alpha149_trend_break"
+    # A coherent uptrend (high R2) is not a structure break.
+    assert alpha149.exit_reason("alpha149_trend_break", broken(log_price_r2=0.9),
+                                opened, current) is None
+    # A missing trend fit is never read as a broken trend.
+    assert alpha149.exit_reason("alpha149_trend_break", broken(log_price_r2=None),
+                                opened, current) is None
+    # Shallow noise, rising velocity, expanding trade count and a missing
+    # drawdown each block it.
+    assert alpha149.exit_reason("alpha149_trend_break", broken(drawdown=-0.05),
+                                opened, current) is None
+    assert alpha149.exit_reason("alpha149_trend_break", broken(drawdown=None),
+                                opened, current) is None
+    assert alpha149.exit_reason(
+        "alpha149_trend_break",
+        broken(windows={"30": _w(velocity=0.01, tx=0.6)}), opened, current) is None
+    assert alpha149.exit_reason(
+        "alpha149_trend_break",
+        broken(windows={"30": _w(velocity=-0.01, tx=1.4)}), opened, current) is None
+    # 15% giveback is the minimum, and the kind is a registered exit kind.
+    assert alpha149.TREND_BREAK_DRAWDOWN == .12
+    assert alpha149.TREND_BREAK_R2_MAX == .35
+    assert alpha149.EXIT_ARMS["alpha149_trend_break_exit_v1"] == "alpha149_trend_break"
+    assert "alpha149_trend_break" in alpha149.EXIT_KINDS
+    # The carrier arm keeps the catastrophe-only stop and the shared trailing.
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arm = policies["alpha149_trend_break_steady_v1"]
+    assert arm["trajectory_exit"] == "alpha149_trend_break"
+    assert arm["hard_stop_return"] == -.90
+    assert arm["trailing_activate_return"] == .30 and arm["trailing_drawdown"] == .15
+
+
+def test_wave23_arms_are_reachable_through_the_live_engine_path():
+    """The live path must emit the new arms, and only after their entry kind fires."""
+    # The measured survivable band: pool 30-180 minutes old, FDV/depth 1-20,
+    # depth >= 5000U, buy share >= 50%, depth not leaving, price not falling.
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.0, liquidity_usd=8000.0, volume_5m_usd=120.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    assert alpha149.mechanisms(vector())["survivable_steady"] is True
+    # Every wave-23 arm reuses an existing frozen entry kind.
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm, kind in (("alpha149_moonbag_steady_v1", "survivable_steady"),
+                      ("alpha149_moonbag_control_steady_v1", "survivable_steady"),
+                      ("alpha149_moonbag_merged_v1", "merged_multi_setup"),
+                      ("alpha149_flow_fade_steady_v1", "survivable_steady"),
+                      ("alpha149_time_stop20_steady_v1", "survivable_steady"),
+                      ("alpha149_trend_break_steady_v1", "survivable_steady")):
+        assert arm in policies, arm
+        assert alpha149.SPECS[arm][0] == kind, arm
+    # Drive real frames through the engine: a flat, deep, mature pool must emit
+    # all six arms without the new carriers disturbing the frozen wave-15/16 ones.
+    clock = [datetime(2026, 9, 11, tzinfo=UTC)]
+    engine = alpha149.Engine(clock[0])
+
+    def row(price, liquidity, volume, at):
+        return dict(token_id="solana:T", pair_address="P", chain="solana",
+                    provider="dexscreener", price_usd=price, liquidity_usd=liquidity,
+                    volume_5m_usd=volume, buys_5m=12, sells_5m=2, pool_age_seconds=3600.0,
+                    fdv_usd=24000.0,
+                    observed_at=at, ingested_at=at, recorded_at=at)
+
+    for step, at in enumerate(("2026-09-11T00:00:00Z", "2026-09-11T00:00:30Z")):
+        clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=1 + 30 * step)
+        engine.accept(row(1.0 + 0.05 * step, 7000.0 + 500.0 * step, 100.0 + 10.0 * step, at),
+                      clock[0])
+    clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=32)
+    signals = engine.signals_for("solana:T", "P", clock[0])
+    for arm in ("alpha149_moonbag_steady_v1", "alpha149_moonbag_control_steady_v1",
+                "alpha149_flow_fade_steady_v1", "alpha149_time_stop20_steady_v1",
+                "alpha149_trend_break_steady_v1"):
+        assert arm in signals, arm
+        assert signals[arm]["decision_evidence"]["mode"] == "survivable_steady"
+    # The wave-15/16 carriers still ride their own frozen entry untouched.
+    for arm, mode in (("alpha149_nominal_stop_control_v1", "merged_multi_setup"),
+                      ("alpha149_time_decay_stop_v1", "merged_multi_setup"),
+                      ("alpha149_trend_break_exit_v1", "df_price_up_liquidity_up")):
+        assert arm in signals, arm
+        assert signals[arm]["decision_evidence"]["mode"] == mode, arm

@@ -1157,6 +1157,20 @@
       "validation": "164项相关测试通过；代码03ace85已推送及重启；API224策略、原资金activation和注册/追加定义摘要不变，账本继续推进。详见AUDIT_2026-09-07/REPAIR_ACCEPTANCE.md。",
       "scope": "无初始化、策略定义改写、历史交易/收益改写、补款、新策略、Live或自动复盘恢复。",
       "status": "本地修复已部署，真实运行验收记录见报告；免费API覆盖/缺字段/限流仍可导致待更新，不保证全池实时或真实可卖。"
+    },
+    {
+      "id": "20260912-round01-fullchain-and-exit-rebuild",
+      "recorded_at": "2026-09-12T00:40:00Z",
+      "title": "第1轮：全链路诊断（发现→采集→特征→信号→风控→开仓）、退出重建（7条额外臂）、持续监督回路",
+      "problem": "新目标要求：全链路逐步通过率/延迟/拒绝原因追踪并修复逻辑断点；重建退出（波动率自适应止损、分批止盈+月亮袋、信号衰减、时间止损、结构/趋势）；建立持续监督→复盘→优化回路；新增策略只能以额外模块形式加入。本轮先给出可复核的链路测量与退出重建。",
+      "change": "① 全链路实测（近60分钟）：发现 59,173（solana 35,766/robinhood 11,791/bsc 11,616）→ 有快照 45,902（77.6%）→ 可交易(liq>=1000U) 17,218（29.1%）→ 评估采样 300,000 → 准入 3,134 → 开仓 1,744（135臂/160币）；发现→首帧 p50 303.4s/p90 319.6s；流动性未知 33,536（56.7%）；拒绝原因以观察类为主（pattern_observation 31.6%、no_active_matching_entry_policy 22.9%、cohort_observation 22.4%），风控类 entry_pool_liquidity_unknown 13.3%、below_configured_floor 5.6%。② 过滤器审计：现金 p10 16.02U、<2U 仅2臂、<20U 68臂；臂级准入→开仓 1:1（135:135）；持币集中度不进入拒绝；结论是当前不存在'过严过滤'，瓶颈为采集覆盖(56.7%无流动性读数)、发现时延(303s)与死池写销（24h 写销 120 笔 -409.0U、硬止损 402 笔 -421.6U，而追踪 +56.1U/79 笔、到期 +71.5U/436 笔为正）。③ 退出重建：新增第23波 7 条额外臂（policy_additions 258→265，ledger 未变）——月亮袋阶梯（+100%卖剩余55%使首档净额 1.056 倍本金、一笔锁定本金，+200%卖44%、+400%卖21%，余约20%）、同入场无阶梯对照臂、合并入场阶梯臂、买压衰减退出（flow_grace 3min+min_buy_ratio .45+zero_activity 5min）、20分钟时间止损、结构破坏退出（新种类 alpha149_trend_break：速度<0 且回撤>=12% 且笔数不扩张 且 R²<0.35，缺失不推断）及其载体臂；既有波动率自适应止损(alpha149_vol_scaled_stop, σ×4, 地板22%/上限50%)保持不变。④ 外部源停摆根因：runtime.py:9282 的 chain_meme_trader_only 分支任务表不含 external_sources，最后一批 11 个采集器(2026-09-03T15:00:12Z)全部 completed 无错误 → 设计内暂停，非缺陷；社交维度暂无数据源。⑤ 新增 scripts/supervise_metrics.py：只读有界监督快照 + 9 条复盘触发条件，落盘 data/reports/supervise/。",
+      "rationale": "用户要求'立即执行'且不得替换现有策略：因此退出重建全部以额外臂+同入场对照臂实现，只使用共享引擎既有字段，零引擎改动；独立反事实回放显示阶梯在15个策略中排名最后（仅7.5%持仓曾达+100%），所以它作为1U额外臂与对照臂并行前向测量，而不是替换默认-20%止损——用前向证据而非回放结论决定去留。",
+      "validation": "tests/test_alpha149.py 48 项全通过（新增5项：阶梯首档一次性收回本金与余量10-20%、同入场对照隔离、衰减/时间合同隔离、结构破坏四条件+缺失不推断、活引擎可达性）；注册预览/应用均 ledger_unchanged=true；重载后（PID 36124/18780）新臂在实时引擎出信号（moonbag_merged signals=9 准入1、trend_break_exit 准入1）；遥测全部组件 failures=0，冻结错误 #265/#266 未增长（392/398）；live.enabled=false、paper 不变。",
+      "scope": "代码与注册变更：src/memetrader/alpha149.py（仅新增臂与一个退出种类）、tests/test_alpha149.py（新增测试）、scripts/supervise_metrics.py（新脚本）；未修改任何既有臂字段、未改共享引擎、未改配置。报告：docs/PROJECT_CONTEXT/ROUND01_FULLCHAIN_DIAGNOSIS_20260912.md。待用户决策：是否在链上优先模式恢复免费 RSS/Mastodon（社交维度）；评分门与组合敞口上限以'新增臂+只读评分'实现。",
+      "commit": "",
+      "loaded_at": "2026-09-12T00:30:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND01_FULLCHAIN_DIAGNOSIS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND01_FULLCHAIN_DIAGNOSIS_20260912.md"
     }
   ]
 }
