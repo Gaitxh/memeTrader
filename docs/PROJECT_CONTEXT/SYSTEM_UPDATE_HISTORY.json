@@ -1195,7 +1195,7 @@
       "rationale": "先修度量再谈结论：如果窗口被放大24倍，任何'通过率/是否过严'的判断都不可信。断点定位后选择'只去掉我自己加的上限、保留全部实测保护'的最小改动，并配同条件对照臂，既提高代币级覆盖率又保持可证伪；所有改动仍是额外臂，未触碰现有臂与共享引擎。",
       "validation": "tests/test_alpha149.py 48 + tests/test_alpha149_wave2425.py 10 + tests/test_score149.py 6 = 64 项全通过（新增开放带2项：只移除自设上限、逐条保护仍生效、评分门变体分列两臂）；注册 271->273 ledger_unchanged=true；重载后（PID 33036/16104）开放带机制就绪 242 次、两臂自然开仓 9 笔；月亮袋臂出现首笔真实部分成交与本金锁定；遥测组件 failures=0；冻结错误 #265/#266 未增长；live.enabled=false 与 paper 模式不变。",
       "scope": "修改：src/memetrader/alpha149.py（仅新增机制/臂/计数器）、scripts/supervise_metrics.py（窗口与新增段落）、tests/test_alpha149_wave2425.py（新增2项）、docs/PROJECT_CONTEXT/ROUND01_...md（加入更正块）；新增报告：docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md。待用户决定：统一风控层是否可对现有臂施加同币并发上限（当前只度量未限制）。",
-      "commit": "",
+      "commit": "c1929b6",
       "loaded_at": "2026-09-12T01:30:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md"
