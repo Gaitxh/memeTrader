@@ -1784,7 +1784,8 @@
       "scope": "src/memetrader/store.py、src/memetrader/strategy_explainability.py、src/memetrader/chain_web.py、tests/test_concurrency_cap_floor.py、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动任何策略源码、注册台账、资金周期或既有成交；paper 模式与 live.enabled=false 未变。",
       "next": "1) 观察期：上限放开与名义统一后，需跟踪每臂并发是否真的上升（当前最大 3/8）、以及统一 20U 后各策略的美元盈亏是否如预测那样放大约 1.5 倍。2) 用户已确认口径：全部策略单笔 20U、同时持仓上限 8（含此前无上限的 205 条）。3) 待办不变：统一口径下的 441 条臂留/停清单；代币级并发上限（影子证据 −603.35U）；保留观察名额修复后的观察期结论；E 盘按 5.4GB/天增长约 3 周余量。",
       "report": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json",
-      "visible_entry": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json"
+      "visible_entry": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json",
+      "buy_decision_impact": "用户追问\"这种修改会不会影响策略对单个币的买入判断（尤其该币当前空仓）\"。三条通道逐一实测：①**信号判断完全没变**——入场条件字段一个未动，64 条新增 entry_filter 的臂只多了上限一个键，`chain_meme_trader_entry_filter_matches` 只检查它认识的键；②**持仓上限按\"臂\"而非按\"币\"统计**（`occupied` 按 arm_id 计数、无 token 过滤，store.py:27402-27408 统计、27433 拦截），因此\"该币空仓\"本身既不放行也不拦截，决定因素是**该臂自己**的跨币总持仓；实测 441 条臂中 0 条达到 8（37 条持 1 笔、20 条持 2 笔、4 条持 3 笔），自改动以来 `strategy_open_slot_limit` 拦截 0 次，故**今天没有任何币（含空仓币）因这次改动买不进去**；③**现金通道实测变化为 0**：入场要求 `现金 ≥ 名义+费用`，现金不足 20U 的臂有 68 条，但这 68 条在旧口径下同样买不起（各自注册名义为 5U 或 20U，现金仅 0.88–19.x U），即\"因统一 20U 而新买不进\"的臂 = 0。**两条由此明确的推论**：a) 同一币被数十条臂同时持有（单币堆叠）**不会**因本次改动缓解，因为上限按臂算、每条臂持 1 笔即合规——要治堆叠必须上代币级上限（影子证据 −603.35U，未获批）；b) **68 条臂已资金枯竭**（相对 1000U 起始损耗 98%+），实际上已退出竞争、不再产生新样本，这与参数改动无关，但直接影响\"哪些策略该停\"的判断。"
     }
   ]
 }
