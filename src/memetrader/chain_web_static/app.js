@@ -98,7 +98,23 @@ const reasonText = (reason='') => {
   const value=String(reason);
   if(value==='no_active_matching_entry_policy')return '当前行情未匹配任何启用的入场策略';
   if(value==='all_entry_accounts_cash_below_20usdc')return '匹配策略的可用现金均不足下单金额';
-  const known={entry_cash_below_order_size:'策略可用现金不足本次下单金额',entry_cash_below_20usdc:'策略可用现金不足 20 USDC',insufficient_cash:'策略可用现金不足',strategy_open_slot_limit:'已达到策略同时持仓上限',entry_pool_liquidity_unknown:'等待原池流动性数据',entry_pool_liquidity_below_100_usd:'原池流动性低于 100 美元，禁止买入',entry_pool_liquidity_below_1000_usd:'原池流动性低于 1000 美元，禁止买入',entry_pool_price_or_liquidity_invalid:'原池价格或流动性未达到入场要求',capital_broad_start_not_ready:'资本策略启动条件未满足',awaiting_distinct_observation_sequence:'等待下一次独立观察',wait_amountful_flow_provenance:'等待可追溯的实际资金流证据',family_episode_already_enrolled_or_cooldown_active:'本轮已参与或仍在再入场冷却期',pattern_next_observation:'独立后帧确认入场'};
+  // The four reasons below dominated the entry-evaluation log (measured 2026-09-13: cohort_observation
+  // 34.4%, pattern_observation 26.9%, entry_pool_liquidity_absent_curve_stage 7.1%,
+  // invalid_exact_asof_market_snapshot 4.7%) and previously fell through to the generic branches -
+  // entry_snapshot_too_old even matched `includes('entry')` and rendered as "entry conditions met",
+  // the opposite of what happened. Each label states WHAT the reason measures, because two of these
+  // are observer bookkeeping rather than rejections and one is a data-availability limit, not a fault.
+  const observed={
+    cohort_observation:'观察者记账：本帧进入 cohort 观察序列（非策略拒绝）',
+    pattern_observation:'观察者记账：本帧进入形态观察序列（非策略拒绝）',
+    entry_pool_liquidity_absent_curve_stage:'发射曲线阶段，原池流动性尚不可测，暂不入场',
+    entry_pool_liquidity_below_configured_floor:'原池流动性低于已配置下限，禁止买入',
+    invalid_exact_asof_market_snapshot:'行情快照未通过时点有效性校验（多为该池暂无美元报价）',
+    entry_snapshot_too_old:'行情快照过旧，超过入场新鲜度上限',
+  };
+  if(observed[value])return observed[value];
+  const known={entry_cash_below_order_size:'策略可用现金不足本次下单金额',entry_cash_below_20usdc:'策略可用现金不足 20 USDC',insufficient_cash:'策略可用现金不足',strategy_open_slot_limit:'已达到策略同时持仓上限',entry_pool_liquidity_unknown:'等待原池流动性数据',entry_pool_liquidity_below_100_usd:'原池流动性低于 100 美元，禁止买入',entry_pool_liquidity_below_1000_usd:'原池流动性低于 1000 美元，禁止买入',entry_pool_price_or_liquidity_invalid:'原池价格或流动性未达到入场要求',capital_broad_start_not_ready:'资本策略启动条件未满足',awaiting_distinct_observation_sequence:'等待下一次独立观察',wait_amountful_flow_provenance:'等待可追溯的实际资金流证据',family_episode_already_enrolled_or_cooldown_active:'本轮已参与或仍在再入场冷却期',pattern_next_observation:'独立后帧确认入场',
+    activity_floor_trades_not_met:'入场下限未达：5 分钟成交笔数不足',activity_floor_volume_not_met:'入场下限未达：5 分钟成交额不足',runup_floor_exceeded:'入场下限未达：入场前 20 分钟涨幅超过上限',runup_floor_window_unknown:'入场下限未达：缺少入场前 20 分钟观测，涨幅未知'};
   if(known[value])return known[value];
   if(value.startsWith('wait_')||value.startsWith('awaiting_')||value.includes('not_ready')||value.includes('not_met')||value.includes('rejected'))return value;
   if(value.includes('take_profit'))return '达到分批止盈条件';
