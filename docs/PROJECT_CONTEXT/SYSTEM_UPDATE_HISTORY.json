@@ -1742,9 +1742,10 @@
       "rationale": "为什么放在\"生效定义\"层而不是改台账或改 441 条构造函数：① 台账 `chain_meme_trader_policy_additions` 由触发器禁止 UPDATE/DELETE，历史注册必须保持不可变；② 生效定义是所有消费者的唯一入口（入场闸门、pending 限额、UI），一处生效即覆盖全部 441 条臂与未来新增；③ 改动可见、可逆：每条受影响臂都带原始值与授权依据，删除该归一化即恢复原行为；④ 行为指纹随之上移，避免\"哈希说 2、实际按 8 运行\"的审计裂缝。",
       "validation": "改动前实测（当前 epoch 生效定义）：无上限 205 条、cap=1 共 5 条、cap=2 共 145 条、cap=4 共 74 条、cap=8 共 12 条 → **低于 8 的共 224 条**。改动后：cap=8 共 **236** 条、低于 8 的 **0** 条、带 `concurrency_cap_revision` 标记 **224** 条、顶层标记 `floor=8 raised_policies=224`。新增 6 项测试（提升、恰好等于/高于 8 不动、缺字段不动、注册行与冻结定义零改动且重复重建不累积、指纹随上限重算、顶层标记汇总）全绿；生效定义相关回归集（strategy_explainability / funding_epoch / final_v002_funding_epoch / resource_bound_store / audit_strategy_wiring / whipsaw_guard / cost_coverage_scaleout）在**改动前后失败集合完全一致**（仅 1 项既有失败 test_depleted_account_stops_idle_snapshots_but_keeps_final_account）。部署：19:52:41 重启（PID 46496/42248，11:52:53Z），`kv[runtime-loaded-manifest]` 中 store.py 哈希 a5d95868e1958cbe 与磁盘一致，441 条臂、definition_version 未变、paper/live.enabled=false 未变。",
       "scope": "src/memetrader/store.py（新增 1 个类常量、1 个模块级记忆化字典、1 段生效定义归一化）、tests/test_concurrency_cap_floor.py（新增 6 项）。未改动任何策略源码、注册台账、资金周期或已有成交。按用户指令，本轮对既有策略的实际行为产生了影响（224 条臂的并发上限由 1/2/4 变为 8）。",
-      "next": "1) 待用户确认：另有 **205 条臂根本没有该字段（即无上限）**，按字面指令未改动；若要求\"所有策略一律为 8\"，需另行指示（那是收紧这 205 条臂）。2) 影响面量化：224 条臂新增 1,201 个并发仓位槽位，全部打满时名义增量约 3,528U；部署时这 224 条臂实际只持有 5 个仓位（0.3%），因此上限本身不是当前的开仓瓶颈，后续需观察\"上限放开后开仓数是否真的上升\"，以区分\"受上限抑制\"与\"受信号/现金抑制\"。3) 观察期风险：上限放开可能加剧**单币堆叠**（同一信号被更多臂/同臂多笔承接），与仍在影子观测中的\"代币级并发上限\"提案直接相关；若写销集中度上升，应优先回头处理代币级上限。",
+      "next": "1) 已结案：205 条无上限臂保持无上限（用户确认），本轮不需要进一步改动。2) 影响面量化：224 条臂新增 1,201 个并发仓位槽位，全部打满时名义增量约 3,528U；部署时这 224 条臂实际只持有 5 个仓位（0.3%），因此上限本身不是当前的开仓瓶颈，后续需观察\"上限放开后开仓数是否真的上升\"，以区分\"受上限抑制\"与\"受信号/现金抑制\"。3) 观察期风险：上限放开可能加剧**单币堆叠**（同一信号被更多臂/同臂多笔承接），与仍在影子观测中的\"代币级并发上限\"提案直接相关；若写销集中度上升，应优先回头处理代币级上限。",
       "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
-      "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
+      "decision": "用户于 2026-09-12 明确选择：**那 205 条没有 max_concurrent_positions 字段的臂保持无上限**，不钉成 8。理由与该轮实现一致——缺字段等于\"无上限\"，不属于\"上限小于 8\"的情形，钉成 8 属于收紧而非提升，与\"开仓过少\"的目标相反。因此本轮实现即为最终状态：低于 8 的 224 条已提升为 8，205 条无上限臂不做任何改动。"
     }
   ]
 }
