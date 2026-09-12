@@ -1838,6 +1838,19 @@
       "next": "1) 观察期指标：`pool_migrations_since_start` 的日增率、迁移后新池是否真的产生信号与成交（对照第116轮基线：17,529 个被拒代币中仅 3 个成交）。2) 仍需注意：universe 层仍不做二次登记（539,673 个代币中 0 个多 cohort），迁移代币依赖已有的带流动性帧被再次抓到；若日增率过低，下一步应把 `token_launch_facts.launch_event_type='migration'` 事件接成主动补种。3) 既定未决不变：代币级并发上限（影子 −603.35U）；441→442 条臂（运行定义新增 1 条）的统一口径留/停清单；feature_json 存储净收益；#4 spare 通道预留；#6 持仓取价失败可见性。",
       "report": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md",
       "visible_entry": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md"
+    },
+    {
+      "id": "20260912-round118-no-blacklist-but-four-qualified-blocks-and-the-cash-wall",
+      "title": "第118轮：验证\"系统是否存在拉黑\"——**确认不存在按代币的黑名单**，但\"符合条件就会被买入\"这句话**不成立**：存在四道合格限制（家族 episode 锁、家族资金墙、按臂终身锁、报价容量）加上执行的最后一里；并定位\"部分策略长时间不开仓\"的主因是**资金耗尽**（68/442 条臂现金<20U，`dex_visible_successor` 整族 0 条有资金）",
+      "recorded_at": "2026-09-12T21:45:00Z",
+      "problem": "用户要求确证：系统是否不存在拉黑、只要 meme token 符合条件就会被买入。我此前只依据\"读代码未见 denylist\"作答，不足为凭，因此改为穷举拒绝原因词表、逐条判定哪些是持久性封锁、并量化执行的最后一里。",
+      "change": "只读验证，未改动源码：新增 data/tmp/blacklist_verification.py、blacklist_verify2.py、cash_wall_attribution.py。",
+      "rationale": "\"有没有拉黑逻辑\"与\"符合条件是否必被买入\"是两个命题：前者可用代码与词表证伪，后者需要一个端到端计数（判定→cohort→仓位→成交）。两者都必须用 7 天全量数据回答。",
+      "validation": "**① 拒绝原因词表（近 7 天全量，19 个 reason/status 组合）**：observation 类 `pattern_observation` 1,370,786 行/30,781 币、`cohort_observation` 388,128/76,640；闸门类 `no_active_matching_entry_policy` 206,621/97,862、`entry_pool_liquidity_unknown` 165,891/148,353、**`all_entry_accounts_cash_below_20usdc` 113,696/73,609**、`entry_pool_liquidity_below_configured_floor` 67,459/31,848、`invalid_exact_asof_market_snapshot` 42,916/42,609、`entry_pool_liquidity_below_1_usd` 4,119、`entry_pool_liquidity_below_100_usd` 2,177、**`family_episode_already_enrolled_or_cooldown_active` 1,241/787**、`entry_pool_liquidity_absent_curve_stage` 1,022（本轮新增的分类）、`entry_pool_liquidity_below_1000_usd` 413、`entry_quote_capacity_full` 166、`entry_snapshot_too_old` 20；admitted 类 broad_launch_asof_pass 2,549、market_visible_asof_pass 256、flow_burst_asof_pass 166。**结论：无任何\"banned/denied/blacklist\"语义的拒绝原因**。**② 四道\"合格但被挡\"的机制**：a) **家族 episode 锁**（store.py:29363-29409）：`broad_launch`/`market_visible` 在同一 (token, pool, family) 上**只允许一个 episode**（除非存在注册更晚的臂），`flow_burst` 冷却 1800 秒、`reawakening` 21600 秒——7 天 1,241 行/787 币；b) **家族资金墙**：`all_entry_accounts_cash_below_20usdc` 113,696 行/73,609 币（第 3 大拒绝原因）；c) **按臂终身锁**：169 条臂声明 `single_token_lifetime_entry`、14 条 `single_token_open_or_reserved`，但 7 天内命中 **0 次**；d) **报价容量** `entry_quote_capacity_full` 166 行。**③ 执行的最后一里（订单意图）**：BUY 意图 filled 1,653 / failed 335 / ready 6；SELL filled 3,015 / failed 2,895 / cancelled 2,275 / written_off 194。**④ 端到端覆盖**：7 天 cohort 86,557 个（5,418 个代币）→ 仓位 57,403 笔（4,468 个代币）；24 小时 cohort 2,279（249 币）→ 仓位 5,611（139 币）。**⑤ 沉默臂归因**：442 条臂中 **261 条（59%）24 小时内无开仓**、23 条在本版本从未开仓；主因是**资金耗尽**——68 条臂（15.4%）现金 <20U 无法参与任何新 episode，集中在旧家族：`dex_visible_successor` 0/14 有资金（整族死亡）、`shadow_momentum` 1/14、`broad_launch` 15/45、`evidence_extension_l0` 12/18；而新家族 `flow_burst` 64/64 全部有资金。枯竭臂中 34 条的 `entry_match_mode=NONE`（本就无法被隔离车道匹配）。宽面波次仅 2 条臂带 `requires_distinct_wide_frame`，其家族 cohort 数为 0（从未进入判定）。",
+      "scope": "仅新增只读脚本（data/tmp/）；未改动 src、配置、账本或运行进程。",
+      "next": "1) **对\"符合条件必被买入\"的准确表述**：成立的前提是——该 token 所属家族仍有 ≥20U 现金的臂、该家族在此池尚未用掉 episode（或已过冷却）、该臂未消耗终身额度、且后续存在有效报价完成成交。四道限制之外没有拉黑。2) **沉默策略的修复方向（按优先级）**：a) 资金墙是主因且不可自行恢复（返款已被取消）——需要用户决定是否为枯竭臂补充资金、或按\"剩余现金比例\"下单、或正式停用这些臂；b) 34 条 `entry_match_mode=NONE` 的臂即使有钱也无法被隔离车道匹配，属于结构性不可达，需要单独确认它们是否另有可达路径或应停用；c) 宽面臂（2 条）零 cohort，与 spare 通道 96% 无余量一致，需在 #4 中一并处理。3) 两个并行子代理（沉默臂分阶段普查、结构性可达性）的结论待汇总后并入下一轮。",
+      "report": "data/tmp/blacklist_verification.txt",
+      "visible_entry": "data/tmp/blacklist_verification.txt"
     }
   ]
 }
