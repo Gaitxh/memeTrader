@@ -3356,3 +3356,25 @@ ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
 ACTIVITY_FLOOR150_ARMS = tuple(sorted(_af150.ARMS))
 
+
+# ---- wave 44: RUNUP-FLOOR150 entry run-up caps, as NEW entry arms ----
+# Measured in round 120-20: the write-off rate jumps from 0.6% at a 15% run-up cap (entry price
+# vs the earliest price observed in the 20 minutes before the decision) to 6.0% at 20% and 24.8%
+# uncapped, and the separation is token-clustered significant BOTH ways (write-off +0.322pp
+# CI [+0.082,+0.565]; PnL -4.851 U/pos CI [-9.491,-0.055]). It is not the survival confound
+# (r=-0.116 with the discovery->entry delay). The 20-minute window is deliberate: the acceptance
+# loop's own `history` holds exactly that window, so no extra query is needed.
+#
+# Same one-factor discipline as ACTIVITY-FLOOR150: `kind` reused, the control's exit contract
+# cloned verbatim, so the entry floor is the only difference from
+# `alpha149_merged_multi_setup_fast_v1`.
+#
+# See `runup_floor150.py` for the full rationale and the explicit in-sample caveat.
+from . import runup_floor150 as _rf150  # noqa: E402  (additive wave import, after ALL_ARMS)
+
+SPECS.update(_rf150.ARMS)
+OVERRIDES.update(_rf150.OVERRIDES)
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+RUNUP_FLOOR150_ARMS = tuple(sorted(_rf150.ARMS))
+

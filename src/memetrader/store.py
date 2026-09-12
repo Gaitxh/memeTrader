@@ -26739,6 +26739,50 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_runup_floor_experiments(self) -> int:
+        """Append the RUNUP-FLOOR150 entry arms at their own frontier.
+
+        Same construction as ACTIVITY-FLOOR150: ENTRY arms added to `alpha149.SPECS`, reusing the
+        control's `kind` and cloning its policy body, so the entry run-up cap is the only
+        difference from the matched same-signal control.
+        """
+        from . import runup_floor150
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            template = self.db.execute(
+                "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, runup_floor150.PARENT_ARM),
+            ).fetchone()
+            if template is None:
+                return 0
+            base = self._json_object(template["policy_json"])
+            at = utcnow()
+            added = 0
+            for arm in sorted(runup_floor150.ARMS):
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?", (version, arm),
+                ).fetchone() is not None:
+                    continue
+                policy = deepcopy(base)
+                policy.update({
+                    "arm_id": arm,
+                    "canonical_id": arm,
+                    "entry_family": arm,
+                    "entry_filter": {
+                        **(base.get("entry_filter") or {}), "direction": arm,
+                    },
+                    "source_arm_ids": [],
+                })
+                policy.pop("behavior_contract_hash", None)
+                policy.pop("forward_activation_snapshot_id", None)
+                policy.pop("forward_started_at", None)
+                runup_floor150.apply([policy])
+                self.append_chain_meme_trader_policy(policy, activated_at=at)
+                added += 1
+            return added
+
     def register_chain_meme_research_round2(self) -> int:
         from .research_round2 import round2_policies
         added = 0
@@ -27850,6 +27894,7 @@ class Store:
                 # The separate namespace cannot consume or overwrite old pattern intents.
                 from .cohort_experiments import ROUTER_ARM, REGIME_ARM, routed_cohort_signals
                 from . import activity_floor150
+                from . import runup_floor150
                 candidates = {**previous_features.get("cohort_signals", {}), **dict(cohort_signals)}
                 by_arm = {policy['arm_id']: policy for policy in active}
 
@@ -27899,12 +27944,17 @@ class Store:
                             <= parse_time(captured_at) <= decision_at
                             or not 0 <= (decision_at - parse_time(signal_at)).total_seconds() <= 60):
                         continue
-                    # ACTIVITY-FLOOR150: an opt-in per-arm entry activity floor, checked only
-                    # after a signal has been validated, so a recorded floor rejection means
-                    # exactly "a valid signal existed but the pool was too quiet" rather than
-                    # merely "this arm had no signal". Returns None for every other arm, so no
-                    # existing arm's behaviour changes. Missing activity evidence never admits.
+                    # ACTIVITY-FLOOR150 / RUNUP-FLOOR150: opt-in per-arm entry floors, checked
+                    # only after a signal has been validated, so a recorded floor rejection means
+                    # exactly "a valid signal existed but the pool failed the floor" rather than
+                    # merely "this arm had no signal". Both return None for every other arm, so no
+                    # existing arm's behaviour changes. Missing evidence never admits.
+                    #
+                    # `history` is this loop's own 20-minute ascending observer window for the
+                    # token+pair, so the run-up cap needs no extra query.
                     floor_rejection = activity_floor150.reject_reason(arm, snapshot)
+                    if floor_rejection is None:
+                        floor_rejection = runup_floor150.reject_reason(arm, snapshot, history)
                     if floor_rejection is not None:
                         activity_floor_rejections[arm] = floor_rejection
                         continue

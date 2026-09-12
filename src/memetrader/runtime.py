@@ -1416,6 +1416,11 @@ class Runtime:
                     # `alpha149_merged_multi_setup_fast_v1`, so the entry activity floor is the
                     # only difference and the control is the matched same-signal comparison.
                     self.store.register_chain_meme_activity_floor_experiments()
+                    # RUNUP-FLOOR150: entry run-up caps, as NEW ENTRY arms. Same kind and cloned
+                    # exit contract as the shared control, so the run-up cap is the only
+                    # difference. The 20-minute window is read from the acceptance loop's own
+                    # `history`, so this costs no extra query.
+                    self.store.register_chain_meme_runup_floor_experiments()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
