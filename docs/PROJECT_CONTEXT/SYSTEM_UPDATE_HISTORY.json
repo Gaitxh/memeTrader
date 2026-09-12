@@ -1550,6 +1550,19 @@
       "next": "1) 按第 6.1 节实现：新增 MOVER_RESERVED_SLOTS=8；统计观察集内属于动量白名单的代币数 mover_held；当候选在白名单内且 mover_held<8 时，即使其 (chain,bucket) 已达上限也允许纳管，但不抢占 strong_protected/持仓代币，也不指定受害者；同时把**阈值式纳管改为排序式纳管**（mid_pool_buy_share 在每一个实测窗口里的精确率都高于 small_pool_turnover，按规则与新近度排序后填充 8 个保留槽）。2) 在 pattern-observer 心跳里加 mover_held / mover_admitted 以便观察保留是否生效。3) 用第 5 节的三项探针验收：新增采集量须停在 +13% 附近、达到 >=10 次观测的被标记代币数、以及第80轮口径的密集/稀疏转化表。4) 继续以\"102 个稀疏 ready 池、0 次转化\"为覆盖类工作的固定基线。",
       "report": "docs/PROJECT_CONTEXT/ROUND88_WATCH_SLOT_ARITHMETIC_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND88_WATCH_SLOT_ARITHMETIC_20260912.md"
+    },
+    {
+      "id": "20260912-round89-reserved-mover-admission",
+      "title": "第89轮：落地用户批准的保留槽位纳管——被标记代币达到 >=10 次观测的数量由 1 个跃升到 15 个（9 分钟内）",
+      "recorded_at": "2026-09-12T09:55:00Z",
+      "problem": "第87轮发现白名单只保护\"已在观察集内\"的被标记代币、从不纳管新代币；第88轮量化出这是槽位算术问题（观察集 30 槽已饱和，而动量规则每小时标记约 335 个代币），并取得用户授权：为被标记代币保留 25%（8 个）观察槽。本轮把该授权落地。",
+      "change": "src/memetrader/runtime.py：新增常量 MOVER_RESERVED_SLOTS=8（含依据注释）与纯函数 mover_reserved_admit(watch, token_id, registry)（仅当代币在动量白名单活跃集内、且观察集中属于白名单的代币数少于 8 时返回 True，异常一律返回 False）；观察集纳管循环中的 skip_bucket_full 分支在放弃前先询问该函数，命中时以新理由 admit_mover_reserved 放行。**刻意不做**：不绕过每链上限（只绕过 (chain,bucket) 上限，使保留名额成为全局 8 的上限）；永不抢占持仓或 strong_protected 槽位；替换/借用/回收既有规则完全不动。新增 tests/test_mover_reserved_slots.py 6 项（未满可入、满 8 后拒绝、只统计确属白名单的槽位、未标记代币与无注册表一律拒绝、注册表异常不抛且不放行、保留份额确为观察集的四分之一）。",
+      "rationale": "用户已明确选择 25% 保留份额并给出取舍理由；规格已在第88轮报告中固化，本轮按规格机械执行，并把改动限制在\"只绕过桶上限、不绕过链上限、不抢占任何受保护槽位\"，使最坏情况是全局 8 个槽位的占用，而不是对既有通道的无界挤占。",
+      "validation": "测试：tests/test_mover_reserved_slots.py 6 项 + test_mover_watchlist.py 7 项 + test_mover_watchlist_retire.py 3 项全部通过；tests/test_runtime.py 在本环境有 78 项既存失败，用 git stash 对照确认改动前后**失败集合逐字相同**（差异集为空）。重载 2026-09-12T17:44:31+08:00。重载后 9 分钟实测：被标记代币达到 >=10 次观测的由第87轮（23 分钟窗口）的 **1 个**升到 **15 个**，其中 8 个达到 >=25 次；观测数前 12 名为 262/254/214/114/42/30/29/28/23/21/21/19；新增采集量读数 16.0%。**两项诚实限定**：(1) 16.0% 这个数字被混杂——前四名（262/254/214/114）远超 30 帧目标，几乎必然是本就热门或被持有的代币，而 30/29/28/23/21/21/19 这一簇才可能是保留名额的产物；该口径把被标记代币的每一次观测都计入，因此被天然热门币抬高。要把保留名额自身的开销分离出来，需要按纳管理由 admit_mover_reserved 统计，这是下一步的仪表化工作。(2) **本次改动尚未测量转化**——验收标准仍是第80轮口径的密集/稀疏转化表，对照固定基线\"102 个稀疏 ready 池、0 次转化\"（第87轮），9 分钟远不足以测量。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/runtime.py（常量 + 纯函数 + 一处纳管分支）、tests/test_mover_reserved_slots.py（新增）、docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md（新增）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 仪表化：按 admit_mover_reserved 统计纳管数与保留名额自身的观测增量，以便把 +13% 预算的验收从\"全部被标记代币\"收窄到\"保留槽位\"。2) 待密集 ready 池样本足够后重跑转化表，并补上第87轮无法回答的等密度检验（flagged+dense vs unflagged+dense）。3) 若保留槽位确实密集且能转化，可再议份额；若仍停在 3 次观测，则说明纳管改动没有落到关键位置，下一步应检查分支插入点。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }

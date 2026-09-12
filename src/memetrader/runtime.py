@@ -971,6 +971,30 @@ TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
 # layer's 60-second double-evaluation rule needs, and bounds the extra acquisition to the
 # approved increment. Measured uncapped: 60 observations in 10 minutes and about +38% volume.
 MOVER_FRAME_TARGET = 30
+# Observation slots reserved for mover-watch tokens, approved by the user on 2026-09-12. The
+# pattern watch holds 30 slots (3 chains x {early 3, growth 4, mature 3}) and is saturated, while
+# the mover rule flags about 335 tokens per hour, so reach is a slot-arithmetic problem: 8 reserved
+# slots serve about 32 flagged tokens per hour (9.6% of the flags). Reserved admission may exceed a
+# per-(chain,bucket) cap but never the per-chain cap, and never displaces a held or protected slot.
+MOVER_RESERVED_SLOTS = 8
+
+
+def mover_reserved_admit(watch: Mapping[str, Any], token_id: str, registry: Any) -> bool:
+    """May this mover-watch token take one of the reserved observation slots?
+
+    Pure over its inputs so it can be tested without a runtime: true only when the token is in the
+    registry's active set and the watch already holds fewer than MOVER_RESERVED_SLOTS of them.
+    """
+    if registry is None or not token_id:
+        return False
+    try:
+        active = registry.active(utcnow())
+        if token_id not in active:
+            return False
+        held = sum(1 for key in watch if key in active)
+        return held < MOVER_RESERVED_SLOTS
+    except Exception:
+        return False
 
 
 def _browser_bridge_url_host(value: Any) -> tuple[bool, str]:
@@ -7787,8 +7811,15 @@ class Runtime:
                         reason = "admit_borrow"
                         self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
                     else:
-                        reason = "skip_bucket_full"
-                        continue
+                        # Reserved mover-watch admission (round 88 decision): a flagged token may
+                        # exceed its (chain,bucket) cap while the watch holds fewer than
+                        # MOVER_RESERVED_SLOTS of them. The per-chain cap still applies, and no
+                        # held or protected slot is displaced.
+                        if not mover_reserved_admit(watch, token_id,
+                                                    getattr(self, '_mover_watchlist', None)):
+                            reason = "skip_bucket_full"
+                            continue
+                        reason = "admit_mover_reserved"
                 elif token_id not in held and (chain_used.get(chain, 0) >= 10
                         or bucket != 'early'
                         and any(v['token'].chain == chain and v.get('reactivation_probe') for v in watch.values())
