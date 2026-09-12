@@ -95,6 +95,38 @@ the stop changed nothing (round 35: 0 of 10 cohorts diverged).
    slot turnover (r29), the dense-episode-free lane (r30), the httpx `NO_PROXY` defect (r31),
    provider reliability (r32), the refused-start fix (r33), or the paired-basis questions (r34/r35).
 
-## 7. Probe artifacts
+## 7. Reconciliation, and the ceiling is moving
 
-`data/research/diag_round120/r36_exit_ceiling.py`.
+The split was recomputed **independently in SQL** from the raw columns, so a classification bug in
+the Python probe would show as a mismatch:
+
+| | Python probe | SQL recomputation |
+|---|---|---|
+| forced | −20,332.2U (1,442) | **−20,332.2U (1,442)** |
+| elective | +1,347.8U (1,021) | **+1,346.7U (1,025)** |
+| total | −18,984.4U | **−18,985.5U** |
+
+`forced + elective == total` holds exactly; the small position-count difference is four `other`
+custom-kind closes that the probe and the SQL classify on slightly different keys. **The finding is
+not sensitive to the classification.**
+
+**The ceiling is not a constant.** Restricting to the most recent 2 hours:
+
+| window | positions | forced share | forced PnL | elective PnL |
+|---|---|---|---|---|
+| whole epoch | 2,467 | **58.5%** | −20,332.2U | +1,346.7U |
+| **last 2h** | 1,847 | **53.4%** | −13,850.1U | **+1,438.9U** |
+
+Two things follow, both favourable and both needing more data before they are believed:
+
+1. **The elective share is rising** (41.5% → 46.6%), consistent with the EXIT150 arms accumulating
+   elective take-profit and trailing exits with `principal_recovered` finally non-zero.
+2. **The recent window's elective PnL alone (+1,438.9U) exceeds the entire epoch's (+1,346.7U)** —
+   i.e. recent elective exits are strongly positive.
+
+**Caveat, stated plainly:** the recent window is a subset of the epoch, and the epoch figure already
+contains it, so these are not two independent samples. The trend is worth watching, not banked.
+
+## 8. Probe artifacts
+
+`data/research/diag_round120/r36_exit_ceiling.py`, `r36b_reconcile.py`.
