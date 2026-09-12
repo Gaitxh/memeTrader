@@ -26,10 +26,15 @@ from typing import Any, Mapping
 
 WATCH_SECONDS = 900.0
 # The cap is what turns the flag rate into the approved acquisition budget. A flagged token keeps
-# a protected lease for 15 minutes, so 12 concurrent slots hand about 48 tokens per hour the dense
-# observation the entry layer needs - the "+14% requests, about 49 tokens per hour" the user
-# approved. A larger cap would protect most of the observer's ~35-token watch and starve rotation.
-MAX_WATCHED = 12
+# a protected lease for 15 minutes, so N concurrent slots hand about 4N tokens per hour the dense
+# observation the entry layer needs.
+#
+# Round 86 measured the conversion this is for: with 12 slots the added volume was only +5.7% of
+# acquisition against an approved +13-14%, while 59 of 67 ready pools in the same window were
+# still sparse and converted at 0.0% - against 62.5% for the dense ones. The budget was therefore
+# under-used exactly where the effect is. 24 slots targets the approved envelope; the probe is the
+# measured share of added volume, which must stay near +13%.
+MAX_WATCHED = 24
 MID_POOL_MIN_LIQUIDITY = 20_000.0
 MID_POOL_MIN_BUY_SHARE = 0.6
 SMALL_POOL_MAX_LIQUIDITY = 20_000.0

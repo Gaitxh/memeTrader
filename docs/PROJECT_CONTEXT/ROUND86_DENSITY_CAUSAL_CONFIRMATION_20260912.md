@@ -58,7 +58,22 @@ system.
 - Sample sizes are small (8 dense ready pools). The contrast against 0 of 60 is extreme, but the
   magnitude 57-100% should not be read as a stable rate.
 
-## 4. Next iteration
+## 4. The approved budget is now actually used
+
+Section 3 showed the mechanism works but the funded envelope was under-used: 12 concurrent watch
+slots cost only **+5.7%** of acquisition while 59 of 67 ready pools stayed sparse at 0% conversion.
+`MAX_WATCHED` was therefore raised from 12 to **24** (reload 17:13:40), which is still inside the
+approved +13-14%.
+
+Measured eight minutes later: 43 flagged tokens, 5 of them above 10 observations and 2 above 25,
+with added acquisition volume at **+13.7%** - inside the approved envelope, against +5.7% at 12
+slots and +15.6% uncapped.
+
+So the position at the end of this round: the constraint is causally identified, the mechanism is
+funded at the authorised level, and the open question is now narrow and measurable - whether the
+mover *rule* adds anything over simply observing the hot tokens harder, at equal density.
+
+## 5. Next iteration
 
 1. Grow the dense-ready sample and re-run both tables; report conversion with a token-clustered
    interval rather than a point estimate.
