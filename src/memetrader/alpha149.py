@@ -19,6 +19,7 @@ per-arm sizing declared in ``OVERRIDES``.
 from collections import deque
 from copy import deepcopy
 
+from . import score149
 from .dex_trajectory import Engine as _BaseEngine
 from .models import iso, parse_time as _parse_time
 
@@ -251,6 +252,22 @@ SPECS = {
     'alpha149_flow_fade_steady_v1': ('survivable_steady', '买盘衰减退出·安全带1U', 30),
     'alpha149_time_stop20_steady_v1': ('survivable_steady', '20分钟时间止损·安全带1U', 20),
     'alpha149_trend_break_steady_v1': ('survivable_steady', '结构破坏退出·安全带1U', 30),
+    # wave 24: the multi-dimension score gate, as an arm pair. The score itself
+    # (score149) is an observation over facts the engine already derived; the two
+    # arms sit on OPPOSITE SIDES of its threshold with byte-identical pool
+    # conditions and exit contracts, so "does the score separate outcomes?" is
+    # measurable instead of assumed.
+    'alpha149_score_gate_band_v1': ('score_gate_band', '多维评分门·安全带1U', 30),
+    'alpha149_score_low_band_v1': ('score_low_band', '多维评分门·低分对照1U', 30),
+    # wave 25: the requested new strategy families, each an additional independent
+    # mechanism on the same observed features. Social/narrative velocity has no
+    # collector in the current on-chain-first mode (user decision, round 1), so
+    # the narrative arm uses the documented on-chain rotation proxy instead and
+    # the gap is recorded in the report rather than papered over.
+    'alpha149_momentum_persistence_v1': ('mom_persistence', '动量跟随·多周期同向持续', 60),
+    'alpha149_size_informed_flow_v1': ('size_informed_flow', '聪明钱代理·大单占比上升', 30),
+    'alpha149_early_pool_snipe_v1': ('early_pool_snipe', '新池狙击·早段深池1U', 5),
+    'alpha149_rotation_proxy_v1': ('rotation_proxy', '叙事轮动代理·链上轮换', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -892,6 +909,62 @@ OVERRIDES = {
                     '改用趋势结构判据：30秒价格速度为负 + 回撤已达12% + 笔数不再扩张 + '
                     '价格趋势拟合 R²<0.35（必须真实存在，缺失不推断）同时成立才退出。'
                     '这是"结构/趋势退出"的可实现形式：不是等价格触线，而是等趋势本身失效。'),
+    # ---- wave 24: the multi-dimension score gate (an arm PAIR) -----------------
+    # score149 is pure and as-of: it reads only the already-derived feature vector,
+    # treats a missing dimension as unknown (never as good), and reports coverage.
+    # These two arms share pool conditions and exit contract and differ only by
+    # which side of the threshold they take, so the score's discriminating power is
+    # measured rather than assumed. The score is also recorded for every candidate.
+    'alpha149_score_gate_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_score_low_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='多维评分门·安全带（1U）：池子条件与 survivable_steady 完全相同，'
+                    '额外要求实时多维评分 score149 ≥55 且覆盖率 ≥0.60（缺失维度不计入分子与分母，'
+                    '因此"数据缺失"不可能凑出高分）。评分维度=买盘结构/深度/写销结构带(FDV比与池龄)/'
+                    '多周期动量/参与度(成交量增速÷笔数增速，作为"新增参与者增长"的链上代理)/风险(回撤浅+拟合度+'
+                    '流动性撤离一票否决)。无数据源的维度(前十大持有人变化、持有人集中度、捆绑、社交提及速度、'
+                    'KOL、情绪、历史Rug关联)在模块中显式列为 UNAVAILABLE，不得当作中性或安全。'),
+    'alpha149_score_low_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_score_gate_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='多维评分门·低分对照（1U）：同样的池子条件，但只接受评分 <55（或覆盖率不足）的候选。'
+                    '它与高分臂构成同入场、同退出的A/B，用来检验评分是否真的区分结果；'
+                    '若两臂表现无差异，则评分不应被提升为全局门。'),
+    # ---- wave 25: requested new strategy families, as extra mechanisms --------
+    'alpha149_momentum_persistence_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_age_rate_accel_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='动量跟随（2U，60分钟）：要求15/30/60秒三个尺度同向为正、短周期速度不低于长周期、'
+                    '回撤仍浅（>-4%）、深度≥3000U且不流失。与"金狗"族不同的是它不要求极早期，'
+                    '只要求动量在多个独立窗口上持续存在——这是用户要求的"动量跟随"模块的独立实现。'),
+    'alpha149_size_informed_flow_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_sf_extreme_buy_pressure_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='聪明钱代理（2U，30分钟）：由于系统没有钱包簇数据，这里用"大单占比上升"作为代理——'
+                    '30秒成交额增速 ÷ 笔数增速 ≥1.3（平均单笔变大）、买笔占比≥60%、原池深度不流失且≥3000U。'
+                    '命名与报告都明确它是代理而非钱包证据；若同一代币同时被多臂击中，爆炸半径由2U上限约束。'),
+    'alpha149_early_pool_snipe_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_young_fast_lane_v1',
+        hard_stop_return=-.15, trailing_activate_return=.20, trailing_drawdown=.12,
+        description='新池狙击（1U，5分钟）：池龄≤10分钟、深度≥2000U（共享底线的2倍）、'
+                    '按池龄归一的成交额与笔数加速均>1、买盘占比≥55%、回撤浅；'
+                    '退出用更紧的-15%止损与+20%→12%追踪、5分钟时间上限。'
+                    '依据：实测池龄<30分钟的写销率22-23%（30-180分钟仅1.5%），'
+                    '所以这条臂故意只用1U并把时间上限压到5分钟，用于检验"早段狙击"是否只在快速兑现下成立。'),
+    'alpha149_rotation_proxy_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_regime_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='叙事轮动代理（1U，30分钟）：社交采集在当前链上优先模式下有意暂停（第1轮用户决定），'
+                    '因此"叙事轮动+社交速度"用链上代理实现——市场宽度改善（regime_risk_on：本引擎已接受帧的'
+                    '短窗口速度/长窗口速度 ≥1.2 且短窗口速度≥0.15）同时该池自身处于实测最强入场机制'
+                    '（池龄归一化活动加速 >3倍一小时基准）且 FDV/深度 ≤20（实测写销带）。'
+                    '报告与命名都标注这是代理实现，社交维度仍为证据缺口。'),
 }
 
 
@@ -1449,6 +1522,65 @@ def mechanisms(f):
         pool_age is not None and pool_age >= 1800 and liquidity >= 10000
         and ret > 0 and turn is not None and turn > .5)
 
+    # ---- wave 25: the requested new strategy families ----------------------
+    # `prev_liq` is only bound inside the `if previous:` block above, so the depth
+    # comparison is rebound here: an unbound local would raise on exactly the
+    # single-frame pools this family sees most often.
+    prev_depth = _num(previous.get('liquidity_usd')) if isinstance(previous, dict) else None
+    # 29. Momentum following: the same direction of travel on three independent
+    #     horizons, with the short horizon not slowing down. This is deliberately
+    #     NOT a "young pool" rule - it accepts any age and asks only whether the
+    #     momentum persists across scales.
+    w60_v = _num(w60.get('log_velocity')) if w60 else None
+    if w15 and w60 and v30 is not None and w60_v is not None and r15 is not None and r60 is not None:
+        out['mom_persistence'] = bool(
+            r15 > 0 and r60 > 0 and ret > 0 and v30 >= w60_v > 0
+            and drawdown is not None and drawdown > -FRICTION / 2
+            and liquidity is not None and liquidity >= 3000
+            and liq_now is not None and prev_depth is not None and liq_now >= prev_depth * .98)
+
+    # 30. Size-informed flow PROXY (no wallet-cluster data exists): volume growing
+    #     faster than the trade count means the average trade is getting larger.
+    #     Named as a proxy everywhere; it is not wallet evidence.
+    if w is not None:
+        vol_growth = _num(w.get('rolling_volume_change_ratio'))
+        tx_growth = _num(w.get('rolling_tx_change_ratio'))
+        if vol_growth is not None and tx_growth is not None and tx_growth > 0:
+            out['size_informed_flow'] = bool(
+                vol_growth / tx_growth >= 1.3
+                and buy_share is not None and buy_share >= .6
+                and liquidity is not None and liquidity >= 3000
+                and liq_now is not None and prev_depth is not None and liq_now >= prev_depth)
+
+    # 31. Early-pool snipe: the earliest window in which depth already exists.
+    #     Measured risk: pool age < 30 minutes carries a 22-23% write-off rate
+    #     (1.5% at 30-180 minutes), so this arm trades 1U with a 5-minute ceiling.
+    out['early_pool_snipe'] = bool(
+        pool_age is not None and pool_age <= 600
+        and liquidity is not None and liquidity >= 2000
+        and vol_age_acc is not None and vol_age_acc > 1
+        and tx_age_acc is not None and tx_age_acc > 1
+        and buy_share is not None and buy_share >= .55
+        and drawdown is not None and drawdown > -FRICTION)
+
+    # 32. Narrative-rotation PROXY: the social lane is intentionally paused in the
+    #     on-chain-first mode, so rotation is read from the engine's own breadth
+    #     improvement plus the measured strongest entry mechanism on a pool inside
+    #     the measured write-off band.
+    out['rotation_proxy'] = bool(
+        out['regime_risk_on'] and out['age_rate_acceleration']
+        and fdv_liq is not None and fdv_liq <= 20.0)
+
+    # 33. Wave 24 score gate: the multi-dimension score (score149) must clear its
+    #     score floor, its coverage floor AND have every required dimension
+    #     present, on top of the measured safe band. A missing dimension lowers
+    #     coverage instead of counting as neutral, so a thinly observed candidate
+    #     cannot pass. The low-score arm is the exact complement - the same frames,
+    #     the other side of the threshold - so the pair is a clean A/B.
+    score_ok, score_result = score149.passes(f)
+    out['score_gate_band'] = bool(out['survivable_steady'] and score_ok)
+    out['score_low_band'] = bool(out['survivable_steady'] and not score_ok)
+
     # 28. Merged multi-setup entry (wave 8) is applied by `_finish` on every
     #     return path, so the two-frame members remain visible without a window.
     return _finish(out)
@@ -1665,6 +1797,25 @@ RULES = {
                              '5分钟活动率≥自身按龄归一小时率的3倍（成交额/笔数取强者）、'
                              '有真实活动（5分钟成交额≥1000U或换手≥0.1）、买盘占比≥50%；'
                              '复刻系统收益最高入场机制 resource_age_rate。',
+    # wave 24
+    'score_gate_band': '多维评分门·安全带：池子条件与 survivable_steady 相同，'
+                       '并要求实时多维评分 score149 ≥55、覆盖率 ≥0.60（缺失维度不计入分子分母）；'
+                       '评分为纯函数、只用已观测特征，无数据源的维度显式列入 UNAVAILABLE。',
+    'score_low_band': '多维评分门·低分对照：同样的池子条件，只接受评分 <55 或覆盖率不足的候选，'
+                      '与高分臂构成同入场同退出的A/B。',
+    # wave 25
+    'mom_persistence': '动量跟随：15/30/60秒三个独立窗口同向为正、短周期对数速度不低于长周期且为正、'
+                       '30秒收益为正、回撤浅于半个摩擦、深度≥3000U且不流失；不限定池龄。',
+    'size_informed_flow': '聪明钱代理（非钱包证据）：30秒成交额增速÷笔数增速 ≥1.3（平均单笔变大）、'
+                          '买笔占比≥60%、深度≥3000U且不流失；系统当前没有钱包簇数据，报告须标注为代理。',
+    'early_pool_snipe': '新池狙击：池龄≤10分钟、深度≥2000U、按池龄归一的成交额与笔数加速均>1、'
+                        '买盘占比≥55%、回撤浅于一个摩擦；实测该龄段写销率22-23%，故1U且5分钟上限、-15%止损。',
+    'rotation_proxy': '叙事轮动代理（社交采集有意暂停）：市场宽度改善 regime_risk_on 与实测最强入场机制'
+                      ' age_rate_acceleration 同时成立，且 FDV/深度≤20（实测写销带）；'
+                      '社交提及速度/KOL/情绪仍为证据缺口。',
+    # wave 23
+    'alpha149_trend_break': '结构破坏退出：30秒速度为负 且 回撤≥12% 且 笔数不再扩张 且 价格趋势拟合R²<0.35'
+                            '（四项必须真实存在，缺失不推断）同时成立才退出。',
 }
 
 
@@ -1880,10 +2031,36 @@ class Engine(_BaseEngine):
             for name, ok in band_steps.items():
                 self.counts['band_step:' + name] += int(bool(ok))
             self.counts['band_step:evaluated'] += 1
+            # wave 24: the score is recorded for EVERY candidate the engine sees,
+            # whether or not an arm fires, so its threshold can be calibrated from
+            # live data later instead of guessed now. Buckets are counted on the
+            # score before the gate; coverage is counted separately because a
+            # candidate with missing dimensions must never look like a high score.
+            score_result = score149.score(f)
+            score_value = score_result.get('score')
+            if score_value is None:
+                self.counts['score_step:no_score'] += 1
+            else:
+                bucket = min(4, max(0, int(score_value // 20)))
+                self.counts['score_step:bucket_%d' % (bucket * 20)] += 1
+                self.counts['score_step:ge_min'] += int(score_value >= score149.SCORE_MIN)
+            self.counts['score_step:coverage_ok'] += int(
+                (score_result.get('coverage') or 0.0) >= score149.COVERAGE_MIN)
+            for name in score_result.get('missing_dimensions') or ():
+                self.counts['score_step:missing:' + name] += 1
+            self.counts['score_step:evaluated'] += 1
+            if band_steps['flat_or_rising'] and band_steps['core_chain']:
+                # The gate question, measured on exactly the frames the band arms can
+                # trade: how many reach the band at all. The two sides of the
+                # threshold are counted below, once the mechanisms have run.
+                self.counts['score_step:band_frames'] += 1
         except Exception:  # instrumentation must never affect trading
             pass
         flags = mechanisms(f)
         self.counts['alpha149_evaluations'] += 1
+        if flags.get('survivable_steady'):
+            self.counts['score_step:band_high'] += int(bool(flags.get('score_gate_band')))
+            self.counts['score_step:band_low'] += int(bool(flags.get('score_low_band')))
         for kind, hit in flags.items():
             if hit:
                 self.counts['alpha149_ready:' + kind] += 1

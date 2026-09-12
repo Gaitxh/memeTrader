@@ -1171,6 +1171,20 @@
       "loaded_at": "2026-09-12T00:30:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND01_FULLCHAIN_DIAGNOSIS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND01_FULLCHAIN_DIAGNOSIS_20260912.md"
+    },
+    {
+      "id": "20260912-round02-score-gate-and-new-families",
+      "recorded_at": "2026-09-12T00:50:00Z",
+      "title": "第2轮：多维实时评分门（额外臂对）+ 四个新策略模块（额外臂）+ 数据层缺口实测",
+      "problem": "用户要求：在完整策略判断之前建立实时多维评分门；新增动量跟随/聪明钱簇/叙事轮动+社交速度/新池狙击四类策略；并补齐链上、社交、风险三类特征。第1轮已确认社交采集在链上优先模式下有意暂停，用户本轮决定不恢复采集、改用链上代理并标注缺口。",
+      "change": "① 数据层实测（近2万条快照）：holders/buyers_5m/honeypot/sellable/税率列填充数全部为0，但 raw_json 中确实带有 buyers/sellers(864次) 与 txns(451次)——数据已抓取但未解析入库；系统内不存在钱包簇/捆绑/创作者-Rug关联表。因此把请求维度分为'可观测/代理/缺口'三类并在报告中逐项标注。② 新增 src/memetrader/score149.py：纯函数、as-of、无交易权限的多维评分（flow .20/depth .18/structure .16/momentum .16/participation .15/risk .15），缺失维度不计入分子分母并单独报告覆盖率，必须维度只含与30秒窗口无关的四项（实测 p50 每池1帧，避免重演第1轮已修的'严格上涨饥饿'），9个无源维度写入 UNAVAILABLE 且绝不被当作中性。③ 第24波：评分门做成一对额外臂 score_gate_band_v1（安全带且评分≥55且覆盖率≥0.60）与 score_low_band_v1（同池条件、同退出、阈值另一侧），使'评分是否区分结果'可测；并为每一帧候选记录分数分桶/覆盖率/缺失维度计数以便日后按分布校准阈值。④ 第25波：四个新策略模块各为独立额外臂——mom_persistence（15/30/60秒同向且短周期不减速，不限池龄）、size_informed_flow（成交额增速÷笔数增速≥1.3，明确标注为聪明钱'代理'而非钱包证据）、early_pool_snipe（池龄≤10分钟、深度≥2000U，按实测<30分钟写销率22-23%定价为1U/5分钟/-15%止损）、rotation_proxy（社交暂停下用市场宽度改善+实测最强入场机制的链上轮动代理）。⑤ 注册 265→271 条 policy additions（ledger 未变）并重载运行进程。",
+      "rationale": "约束是'新策略必须以额外策略形式加入，不得修改/替换/覆盖任何现有策略'，因此评分门不做成全局硬门（全局门会改变100+条现有臂的入场行为），而是同入场同退出的额外臂对；评分本身只作观察。社交维度按用户决定不恢复采集，改用链上代理并在模块、规则文本与报告中三处显式标注证据缺口。",
+      "validation": "tests/test_score149.py 6项 + tests/test_alpha149_wave2425.py 8项 + tests/test_alpha149.py 48项 = 62项全通过（含缺失不计中性、必需维度、窗口维度不强制、评分门同入场A/B、代理而非钱包证据、早段狙击1U/5分钟等断言；新增测试还捕获并修复了一个 prev_liq 未绑定异常）。注册预览/应用均 ledger_unchanged=true；重载后（PID 24244/38792）评分仪表已累积338帧：ge_min 169(50.0%)、coverage_ok 333(98.5%)、missing:momentum 67(19.8%)、missing:participation 46(13.6%)；mom_persistence 就绪25次并已开仓2笔；遥测 failures=0，冻结错误 #265=392/#266=398 未增长，live.enabled=false 与 paper 不变。",
+      "scope": "新增：src/memetrader/score149.py、tests/test_score149.py、tests/test_alpha149_wave2425.py；修改（仅新增机制/臂/仪表，未改任何既有臂字段与共享引擎）：src/memetrader/alpha149.py；报告：docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md。未做（需用户确认的数据层改动）：把 raw_json 的 buyers/sellers 解析落库以把'新参与者增长'从代理升级为直观测；组合级同币敞口上限。",
+      "commit": "",
+      "loaded_at": "2026-09-12T00:38:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md"
     }
   ]
 }
