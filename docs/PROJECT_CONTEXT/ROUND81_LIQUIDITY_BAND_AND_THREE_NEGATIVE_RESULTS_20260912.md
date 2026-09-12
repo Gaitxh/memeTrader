@@ -105,7 +105,37 @@ decision, which the user has declined for now. This closes the "is there a free 
 | free capacity for a watch-list | **none** — 0 of 402 spare-capacity opportunities, low-priority requests cancelled for budget |
 | exit variants in general | third independent negative result |
 
-## 6. Monitoring and next iteration
+## 6. New supervision tool: `scripts/paired_arm_ab.py`
+
+Every wrong conclusion this project has drawn from an arm comparison came from comparing two arms
+that did not ride the same opportunities. That check is now a script instead of a careful mood:
+
+```
+python scripts/paired_arm_ab.py ARM_A ARM_B [--hours 48] [--json]
+```
+
+It pairs the two arms inside each cohort that holds both, reports the pooled and median
+difference, the share of pairs A wins, a **token-clustered** bootstrap interval (resampling tokens,
+because one token carries dozens of arms), and a **leave-one-token-out** range — the check that
+caught the `plateau_stall` result in round 80, where a clustered interval alone would have looked
+significant while a single +17.98U trade carried the total. It refuses a verdict below 20 settled
+positions per side and 20 paired cohorts, and prints `NOT READY` instead.
+
+Validation: on `plateau_stall` vs `momentum_floor` it reproduces the manual round-80 numbers
+(55 paired cohorts, mean +0.79U, A better in 36.4%) and adds the clustered interval
+[+0.31, +1.34] plus a leave-one-token-out mean of +0.55 — the paired difference survives dropping
+the best token even though the arm's absolute total does not.
+
+Current A/B status (48h, all still below threshold):
+
+| pair | settled A / B | paired cohorts | verdict |
+| --- | --- | --- | --- |
+| `long_hold_open_band_v1` / `long_hold_control_v1` | 4 / 4 | 2 | not ready |
+| `deadpool_open_band_v1` / `deadpool_control_v1` | 4 / 4 | 4 | not ready |
+| `dense_flow_v1` / `dense_flow_hold_v1` | 17 / 15 | 11 | not ready (−16.6% vs −25.3% of stake so far) |
+| `mid_band_flow_v1` / `shallow_band_flow_v1` | 1 / 0 | 0 | not ready (wave 41, deployed this round) |
+
+## 7. Monitoring and next iteration
 
 1. Wave 41 is a paired, same-contract A/B. Judge it only after >=20 settled positions per side,
    with an age-controlled cohort and token matching; until then report readiness, not performance.
