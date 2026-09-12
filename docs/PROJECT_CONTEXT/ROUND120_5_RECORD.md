@@ -96,10 +96,19 @@ another redundant arm would change nothing; the constraint is signal supply to t
 | **`market_mark_trailing_exit`** | **9** | **+43.06** |
 | `alpha149_plateau_stall` | 5 | +9.24 |
 | everything else (9 reasons) | ~30 | ≈ -53 |
-| **total** | ~518 | **≈ -4,091.68** |
+| sum of the table | ~518 | **≈ -4,520** |
 
-**Two engines produce the whole loss: genuine pool deaths (-3,540U, 86.5%) and the hard stop
-(-933U, 22.8%). Every other exit combined is about +380U.**
+**Two engines produce the whole loss: genuine pool deaths (-3,540U, 76%) and the hard stop
+(-933U, 20%). Every other exit combined is about +380U.**
+
+> **Denominator correction (mine).** An earlier draft of this record quoted `-4,091.68U` as the
+> epoch total. That number came from `trade_context_ledger.py --minutes 180` and is a
+> **180-minute window**, not the epoch. The epoch's all-time `SUM(realized_pnl_usd)` is
+> **-4,643.66U** at 20:33:31Z. The exit-reason table above is all-time (no time filter) and sums
+> to ≈ -4,520 at 20:32:33Z, the remainder being positions that closed in the intervening minute.
+> Mixing a windowed total with an all-time table is exactly the class of error the old session
+> wrote its time-window trap rule for; recorded rather than silently edited.
+
 
 The hard stop is the engine EXIT150's `widestop` arm targets (its `-0.55` economic stop is
 ≈ -51% price, against the -13.3% price stop that fires inside the p90 30-second move of 9.49%).
