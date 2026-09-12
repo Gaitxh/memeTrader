@@ -1825,6 +1825,19 @@
       "next": "1) **建议的修复（下一轮首选）**：补\"迁移后再登记\"路径——当同一代币出现**不同池地址**且带流动性的帧时，为其新池建立 cohort（或让入场判定接受该帧），复用系统已有的多池 cohort 结构（已有 171 个代币多池先例），**不新增任何请求**；可选叠加：用 `token_launch_facts.launch_event_type='migration'` 事件主动补种。2) 落地前需先量：迁移事件每天有多少、其中多少已被观察到（本轮只测到 0.4% 被跟踪）。3) 既定未决不变：代币级并发上限（影子 −603.35U）；统一 20U 口径下 441 条臂留/停清单；feature_json 存储净收益；#4 spare 通道预留；#6 持仓取价失败可见性。",
       "report": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md",
       "visible_entry": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md"
+    },
+    {
+      "id": "20260912-round117-pool-migration-watch-fix",
+      "title": "第117轮：修复\"毕业后不再被判断\"的机械阻断——观察集改按**池**迁移（新池取代不可用旧池），上线 3 分钟内实测生效 1 例（solana:DX1SnAPC… 旧池→新池）；健康池与持仓池永不夺让",
+      "recorded_at": "2026-09-12T21:00:00Z",
+      "problem": "第116轮实测：曲线阶段被拒的 17,529 个代币中，26.3% 后来产出了带流动性的帧，却只有 3 个被买入。根因定位到两处机械阻断：① **观察**——pattern watch 以 `token_id` 为键，同一代币的新池帧在 runtime.py:7795-7808 被判为 `skip_other_pool` 直接丢弃，代币从此回不到观察面；② **判定**——cohort 是按帧的池地址建立的（store.py:29544-29561），所以判定层本身没有问题，问题纯在观察层。",
+      "change": "src/memetrader/runtime.py：在 `_remember_pattern_quotes` 的\"同代币不同池\"分支新增**池迁移**判定——当同时满足：新池地址存在且 `pairCreatedAt` **晚于**当前池、当前池**不可用**（quote 流动性缺失/低于底线）、新帧价格>0 且流动性≥底线且年龄在 0–30 秒、且该帧未触发 `_paper_quote_rejections`、并且该代币**不持有仓位也不在保护集**时，把观察条目迁移到新池（重算 bucket/expires、帧计数归零、记录 `migrated_from_pool`/`migrated_at`），reason 记为 `admit_migrated_pool`；否则保持原有 `skip_other_pool` 行为。新增计数与清单 `_pattern_watch_pool_migrations` / `_pattern_watch_migrated_tokens`（有界 60 条），写入 kv 检查点与心跳 error_detail，便于离线核验。",
+      "rationale": "三个设计约束：① **不新增任何请求**——迁移花的是已经抓到的那一帧；② **不夺让健康资源**——只有当前池\"不可用\"时才迁移，持仓/待成交/保护的池一律不动，因此不会打断在跑的仓位或即将成交的信号；③ **只认更新的池**——`pairCreatedAt` 必须更晚，避免在两个同时活跃的挂牌之间来回抖动。另外把新鲜度写成 `0 <= age <= 30`（原写法接受未来时间戳，负年龄会被误判为新鲜）。",
+      "validation": "**单元测试**：新增 tests/test_pool_migration_watch.py 7 项全绿——旧池无流动性时新池接管（含 frame_count 归零与迁移来源记录）、健康池不被夺让（仍计 skip）、持仓代币不被迁移、新池必须更新、新池必须过流动性底线、陈旧新池帧被拒、迁移后 bucket 按新池龄重算。**过程中的自我发现**：测试最初用固定未来时间戳，使新鲜度校验被\"负年龄\"绕过而假通过，随即把运行时判定改为 `0 <= age <= 30` 并把测试改用真实时钟。**回归**：8 个 runtime 相关测试文件在改动前后失败集合**逐条一致**（各 20 项既有失败，差异集为空）。**生产实测（重载后 3 分钟内）**：`pool_migrations_since_start=1`，迁移代币 `solana:DX1SnAPCfV9ZDGmYguUXCAtSQ8pL3B7N4ak4cqj`：旧池 `HUqsFVpVXVff1A3Qer2hNmwUkzydFXfXAjnEK6fqDmn6` → 新池 `AkrF8Msikv6FUxg2bL69iXWKL3gNkyMn8Lt2WVdHs5Wv`；同期 `other_pool_quote_skips=2`（健康池照旧跳过，行为未被放宽）。部署：22:37:24 重载（PID 48716/5468，runtime.py 哈希 04082d46f2d6fbf7 与磁盘一致）。",
+      "scope": "src/memetrader/runtime.py（准入循环 1 处分支 + 2 项计数/清单 + kv 与心跳字段）、tests/test_pool_migration_watch.py（新增 7 项）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。未改动任何策略源码、注册台账、资金周期或既有成交；paper 与 live.enabled=false 未变。",
+      "next": "1) 观察期指标：`pool_migrations_since_start` 的日增率、迁移后新池是否真的产生信号与成交（对照第116轮基线：17,529 个被拒代币中仅 3 个成交）。2) 仍需注意：universe 层仍不做二次登记（539,673 个代币中 0 个多 cohort），迁移代币依赖已有的带流动性帧被再次抓到；若日增率过低，下一步应把 `token_launch_facts.launch_event_type='migration'` 事件接成主动补种。3) 既定未决不变：代币级并发上限（影子 −603.35U）；441→442 条臂（运行定义新增 1 条）的统一口径留/停清单；feature_json 存储净收益；#4 spare 通道预留；#6 持仓取价失败可见性。",
+      "report": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/RUNTIME_TIMING_PAYLOAD_STRUCTURE.md"
     }
   ]
 }

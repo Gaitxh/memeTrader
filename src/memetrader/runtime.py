@@ -7800,11 +7800,76 @@ class Runtime:
                         reason = "refresh_exact_pool"
                         watch[token_id]["quote"] = snapshot
                     else:
-                        reason = "skip_other_pool"
-                        # Do not let another pool erase an unconsumed original-pool
-                        # frame or postpone its refresh with an unusable timestamp.
-                        self._pattern_watch_other_pool_skips = getattr(
-                            self, "_pattern_watch_other_pool_skips", 0) + 1
+                        # POOL MIGRATION (2026-09-12). A token listed on a bonding curve / launchpad
+                        # (pumpfun, fourmeme, meteoradbc, ...) is rejected on that listing - correctly,
+                        # it has no pool liquidity - and graduation then creates a NEW pool under the
+                        # same token. Measured: of 17,529 tokens first rejected for unknown liquidity
+                        # in 24h, 26.3% later produced a liquidity-bearing frame but only 0.4% of those
+                        # frames were on a new pool and only 3 tokens were ever bought, because this
+                        # watch is keyed by token and a frame for another pool was simply skipped.
+                        # Moving the entry to the NEWER pool spends the frame that was already
+                        # fetched (no new request), and it only happens when the current pool is
+                        # unusable: a healthy, held or pending pool is never displaced.
+                        migrated = False
+                        if token_id not in held and token_id not in strong_protected:
+                            incoming = next(
+                                (p for p in pairs
+                                 if canonical_token_address(chain, str(p.get("pairAddress") or ""))
+                                 != watch[token_id]["pair_address"]), None)
+                            incoming_address = str((incoming or {}).get("pairAddress") or "")
+                            incoming_created = (incoming or {}).get("pairCreatedAt")
+                            item = watch[token_id]
+                            current_pool_liquidity = getattr(item.get("quote"), "liquidity_usd", None)
+                            floor = getattr(self, "_chain_paper_execution", {}).get(
+                                "min_pool_liquidity_usd", 1000.0)
+                            current_pool_unusable = (
+                                current_pool_liquidity is None
+                                or not math.isfinite(current_pool_liquidity)
+                                or current_pool_liquidity < floor
+                            )
+                            if (incoming_address and incoming_created
+                                    and float(incoming_created) > float(item.get("pool_created_at_ms") or 0)
+                                    and current_pool_unusable
+                                    and snapshot.price_usd is not None and snapshot.price_usd > 0
+                                    and snapshot.liquidity_usd is not None
+                                    and math.isfinite(snapshot.liquidity_usd)
+                                    and snapshot.liquidity_usd >= floor
+                                    and 0 <= (current - snapshot.observed_at).total_seconds() <= 30
+                                    and not self._paper_quote_rejections(token_id, token, snapshot, current)):
+                                age_ms = current.timestamp() - float(incoming_created) / 1000.0
+                                bucket = ("early" if age_ms < 900
+                                          else "growth" if age_ms < 21600 else "mature")
+                                item["migrated_from_pool"] = item.get("pair_address")
+                                item["pair_address"] = canonical_token_address(chain, incoming_address)
+                                item["pool_created_at_ms"] = float(incoming_created)
+                                item["bucket"] = bucket
+                                item["quote"] = snapshot
+                                item["expires_at"] = current + timedelta(
+                                    minutes=20 if bucket == "mature" else 15)
+                                # The frame accounting belongs to the OLD pool, so it starts over.
+                                item["frame_count"] = 0
+                                item["last_useful_at"] = None
+                                item["sampled_at"] = None
+                                item["migrated_at"] = iso(current)
+                                self._pattern_watch_pool_migrations = getattr(
+                                    self, "_pattern_watch_pool_migrations", 0) + 1
+                                _migrated = getattr(self, "_pattern_watch_migrated_tokens", None)
+                                if _migrated is None:
+                                    _migrated = self._pattern_watch_migrated_tokens = {}
+                                _migrated[token_id] = {
+                                    "from": item["migrated_from_pool"], "to": item["pair_address"],
+                                    "at": iso(current)}
+                                if len(_migrated) > 60:
+                                    for _old in sorted(_migrated, key=lambda k: _migrated[k]["at"])[:-60]:
+                                        _migrated.pop(_old, None)
+                                reason = "admit_migrated_pool"
+                                migrated = True
+                        if not migrated:
+                            reason = "skip_other_pool"
+                            # Do not let another pool erase an unconsumed original-pool
+                            # frame or postpone its refresh with an unusable timestamp.
+                            self._pattern_watch_other_pool_skips = getattr(
+                                self, "_pattern_watch_other_pool_skips", 0) + 1
                     continue
                 if chain not in {"solana", "bsc", "robinhood"}:
                     reason = "skip_chain"
@@ -8483,7 +8548,8 @@ class Runtime:
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected};"
                          f"mover_watch={len(getattr(self, '_mover_watchlist', None).active(utcnow())) if getattr(self, '_mover_watchlist', None) is not None else 0};"
                          f"mover_reserved_admissions={getattr(self, '_mover_reserved_admissions', 0)};"
-                         f"mover_reserved_injections={getattr(self, '_mover_reserved_injections', 0)}")
+                         f"mover_reserved_injections={getattr(self, '_mover_reserved_injections', 0)};"
+                         f"pool_migrations={getattr(self, '_pattern_watch_pool_migrations', 0)}")
         self.store.set_kv("chain-meme-pattern-watch", {
             "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
             "sampled": sampled, "projected": projected,
@@ -8491,6 +8557,10 @@ class Runtime:
             "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
             "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
             "other_pool_quote_skips_since_start": getattr(self, "_pattern_watch_other_pool_skips", 0),
+            # Pool migrations this process moved a watch entry onto (a graduated token's new pool),
+            # with the from/to addresses, so the effect can be measured without touching the loop.
+            "pool_migrations_since_start": getattr(self, "_pattern_watch_pool_migrations", 0),
+            "pool_migrated_tokens": dict(getattr(self, "_pattern_watch_migrated_tokens", {}) or {}),
             # Reserved mover-watch admissions, so the approved +13-14% budget can be verified on
             # the reserved slots themselves instead of on every observation of a flagged token.
             "mover_reserved_admissions": getattr(self, "_mover_reserved_admissions", 0),
