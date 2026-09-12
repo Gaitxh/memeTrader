@@ -148,3 +148,34 @@ class Registry:
             'watch_seconds': self.watch_seconds,
             'counts': dict(self.counts),
         }
+
+
+def reserved_candidates(registry: 'Registry | None', watch: Mapping[str, Any], now: datetime,
+                        reserved_slots: int) -> list[str]:
+    """Flagged tokens that should be injected as admission candidates, newest names first.
+
+    Round 101 measured a **0-of-24 overlap** between the flagged set and the leases the observer
+    actually holds: reserved admission was only reachable from the rejection path
+    (`skip_bucket_full`), and flagged tokens never reached it, so the reservation almost never
+    fired (about 6 admissions/hour against a design of 32). This returns the flagged tokens that
+    the watch does not already hold, so a caller can put them at the head of its candidate stream
+    instead of waiting for them to be rejected.
+
+    It returns at most ``reserved_slots - (flagged tokens already held)`` names, so the reservation
+    stays a ceiling on flagged occupancy rather than an unbounded claim. Pure over its inputs and
+    never raises: a broken registry yields no candidates, which is the safe direction (the caller
+    simply behaves as it did before).
+    """
+    if registry is None or reserved_slots <= 0:
+        return []
+    try:
+        active = registry.active(now)
+        if not active:
+            return []
+        held = sum(1 for key in watch if key in active)
+        room = int(reserved_slots) - held
+        if room <= 0:
+            return []
+        return [token for token in sorted(active) if token not in watch][:room]
+    except Exception:
+        return []
