@@ -93,3 +93,78 @@ friction setting (a frozen user-editable contract).
    whether the observed surface still concentrates movers.
 3. The mover-predictor agent is still running; if its independent result differs from section 1,
    report both and reconcile rather than averaging them.
+
+## 6. Reconciliation with the independent agent, and the watch-list implementation
+
+The independent mover-predictor agent (`data/research/mover_predictor_20260912.md`) reached a
+different rule and a lower lift: `first_liquidity <= 20000 AND volume_5m/liquidity > 1.0`, honest
+lift **~1.6x** (1.9x under a provider-consistent label), and it published that its own auto-fitted
+tree failed held-out (0.0% precision). Its rule and mine point in opposite directions on liquidity,
+so both were re-run on one harness (identical dedup, identical label = >=5 observations within 60
+minutes of the token's first observation in the window, identical time split):
+
+| rule | last 6h held-out | 6-12h held-out | 12-18h held-out |
+| --- | --- | --- | --- |
+| mine `liq>=20k & share>=0.6` | 1.90 | 1.18 | 1.69 |
+| agent `liq<=20k & turn>1.0` | 2.30 (7 flags) | 2.21 (11) | **1.02** (13) |
+| agent `liq<=20k & turn>0.5` | 2.26 (19) | 1.95 (25) | 0.71 (28) |
+| union | 1.95 (55) | 1.35 (66) | 1.57 (72) |
+| `liq>=20k & share>=0.7` | 2.28 (40) | 1.32 | 2.00 (50) |
+
+Reconciled conclusion: **the honest lift is ~1.6-2.0x, not 2.37x.** My first estimate was a single
+split of a single window; the agent's rule has the higher precision but a 3-4% flag rate, tiny
+recall, and it fails in the third window, while mine is stable in all three. The union has the best
+recall (33-39%) at a 20-25% flag rate. The agent's other findings are adopted as facts:
+
+- `strategy-observer:X` **mirrors `X` at the same `observed_at`**, so every count taken from
+  `token_snapshots` without de-duplicating by `(token_id, observed_at)` is inflated. The cadence
+  measurements in this round use the de-duplicated form.
+- providers disagree by up to 37,000x on the same token and **61.7% of movers peak on a non-first
+  provider**, so any peak-based label is provider-dependent; the agent's rule holds under the strict
+  provider-consistent label, so its lift is not an artifact.
+- `holders` is NULL in all 3.17M rows and `buy_tax_pct` / `sell_tax_pct` / `sellable` / `honeypot`
+  in 99.9% — **no safety or tax attribute can be attached to any mover today**, which is a hard
+  limit on the user's data-layer request.
+- only 1.3% of first-seen **Solana** tokens reach >=5 observations within 60 minutes against 44.5%
+  of BSC ones: the dense-observation surface is structurally BSC-heavy while the flag stream is
+  Solana-heavy.
+
+## 7. Watch-list implemented, and the first honest result about it
+
+The user approved the +14% acquisition budget. Implemented (all additive):
+
+- `src/memetrader/mover_watchlist.py` — pure, bounded, in-memory `Registry` plus `admission()`,
+  which reads **only a token's first observation** and admits on either rule (mid-pool buy share, or
+  small-pool turnover). 7 tests in `tests/test_mover_watchlist.py`.
+- `observation_leases145.select_due` gained an optional `priority_first` argument (default empty, so
+  every existing caller keeps its previous ordering).
+- `runtime.py` evaluates the registry where frames are built and passes the active set as
+  `priority_first`, plus reports the watch size in the pattern-observer heartbeat.
+
+Measured after the reload (16:25 local): the watch-list is populating (62 mid-pool and 30 small-pool
+admissions in a 25-minute window), but **the per-token cadence did not change**: flagged tokens show
+a median inter-observation gap of **90.4 s**, identical to unflagged tokens and identical to the
+window before the reload (19% of gaps <= 60 s against 15% for the rest).
+
+The reason is now precise: `next_due_at` already targets 15 seconds, the watch set holds only ~29
+tokens, and yet the effective cycle is ~90 s for everyone. **The cadence is a global throughput
+limit, not a per-token scheduling choice** — so reordering cannot densify, and the approved
+increment has to be spent on the observer's throughput rather than on priority. That is the
+specified next step, and it is a change to the acquisition path, which is why it is not being
+rushed into the live process at the end of a round.
+
+## 8. Status of the user's second and fourth requests
+
+**Exits (request 2):** four independent tests now agree that the exit stack is not where the loss
+is — the paired exit-contract comparison (27 of 28 contracts lose on identical opportunities), the
+independent agent's family review (19 of 20 variant groups negative, hard stop the only clearly
+harmful family, trailing the only clearly good one), the fixed-horizon counterfactual (holding is
+worse: -0.065 at 30 minutes, -0.074 at 60), and the requested early take-profit ladder (negative
+expectancy of `stake * f * (0.44 - 0.558)`). The exits are already better than any of the proposed
+replacements on the measured population.
+
+**Data layer (request 4):** `holders`, taxes, `sellable` and `honeypot` are absent from the
+provider payloads the system receives (99.9-100% NULL across 3.17M rows), and the snapshot writer
+cannot recover them - verified in round 81 by reading the raw payloads. Holder concentration,
+contract permissions and rug linkage therefore cannot be built from the current free sources; they
+need a different source or a paid one, which is a user decision, not an implementation gap.

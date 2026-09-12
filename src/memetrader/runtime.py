@@ -8028,6 +8028,17 @@ class Runtime:
                                              else "cross_provider_receipt:" + receipt[2])
                 histories = state.get("token_frames", {}).get(f"{identity[0]}|{identity[1]}", [])
                 first_seen = (histories[0].get("discovered_at") if histories else None) or iso(received)
+                # MOVER WATCH-LIST (measured 2026-09-12): a token whose FIRST observation shows
+                # either >=20k depth with buy share >= 0.6, or <=20k depth with 5-minute turnover
+                # above 1.0, doubles within the hour 1.2-1.9x more often than the population. The
+                # registry only reads this first observation, is bounded, and never raises.
+                watchlist = getattr(self, "_mover_watchlist", None)
+                if watchlist is None:
+                    from .mover_watchlist import Registry as _MoverRegistry
+                    watchlist = self._mover_watchlist = _MoverRegistry()
+                watchlist.consider(token.token_id, liquidity_usd=snapshot.liquidity_usd,
+                    buys_5m=snapshot.buys_5m, sells_5m=snapshot.sells_5m,
+                    volume_5m_usd=snapshot.volume_5m_usd, now=received)
                 # This is local first observation, not a claimed global creation time.
                 frames.append({"token_id": token.token_id, "pair_address": address, "chain": token.chain,
                     "lifecycle": "early" if age < 900 else "growth" if age < 21600 else "mature",
@@ -8232,7 +8243,9 @@ class Runtime:
             # Open and unexpired pending targets share the priority response;
             # pending protection does not grant a held watch-cap exemption.
             priority = getattr(self,'_market_priority_tokens',getattr(self,'_pattern_held_tokens',set()))
-            due = [v['token'].address for _,v in select_due(watch,utcnow(),held=priority)
+            due = [v['token'].address for _,v in select_due(watch,utcnow(),held=priority,
+                   priority_first=((getattr(self,'_mover_watchlist',None).active(utcnow()))
+                                   if getattr(self,'_mover_watchlist',None) is not None else ()))
                    if v['token'].chain==chain and (v.get('quote') is None
                        or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
             if due and self._dex_quote_low_priority_available():
@@ -8320,7 +8333,8 @@ class Runtime:
                 chain, targets = await completed
                 await observe_chain(chain, targets)
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
-            error_detail=f"watched={len(watch)};sampled={sampled};projected={projected}")
+            error_detail=f"watched={len(watch)};sampled={sampled};projected={projected};"
+                         f"mover_watch={len(getattr(self, '_mover_watchlist', None).active(utcnow())) if getattr(self, '_mover_watchlist', None) is not None else 0}")
         self.store.set_kv("chain-meme-pattern-watch", {
             "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
             "sampled": sampled, "projected": projected,

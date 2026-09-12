@@ -124,10 +124,15 @@ def account_windows(item, counters, now):
 
 def select_due(
     watch: dict[str, dict[str, Any]], now: datetime, *, held: Iterable[str] = (),
-    protected: Iterable[str] = (),
+    protected: Iterable[str] = (), priority_first: Iterable[str] = (),
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Return due non-held work in deterministic observer target order."""
+    """Return due non-held work in deterministic observer target order.
+
+    ``priority_first`` names tokens (the mover watch-list) that are served ahead of otherwise
+    equally due work. It defaults to empty, so every existing caller keeps the previous order.
+    """
     blocked = set(held)
+    first = set(priority_first)
     due = []
     for token_id, item in watch.items():
         if token_id in blocked:
@@ -138,6 +143,7 @@ def select_due(
             incomplete = now < (_time(item.get("min_observe_until")) or admitted)
             due.append((token_id, item, next_due, incomplete, admitted))
     due.sort(key=lambda row: (
+        0 if row[0] in first else 1,  # the mover watch-list first
         row[2],  # most overdue first
         0 if row[3] else 1,  # still-forming 30/120s windows first
         row[4],  # stable first admission
