@@ -1223,7 +1223,7 @@
       "rationale": "先修工程缺陷再解释策略结果：一条与池子真实深度相差4个数量级的报价不是可成交价格，它把深度盈利单结算成-100%，会系统性污染所有依赖价格的退出统计。守卫只针对价格驱动退出，不拦截流动性退出/写销，从而既消除伪亏损又不改变'死池必须离场'的安全语义。复盘口径(持仓时长/家族/退出原因/洗出率)为下一步的额外臂设计提供可证伪的方向。",
       "validation": "新增 tests/test_mark_outlier_guard.py 2项：尘埃报价不得平仓且计数>0、随后真实崩塌(-25%、深度38万)必须照常退出、缺参照/非法输入不做判断；相关测试集98项全通过(alpha149、wave24-26、score149、participant_flow、dex_trajectory、shared_batch148、whipsaw、mark-outlier)。已重载(PID 16820/10152)；冻结错误 #265=392/#266=398 未增长，最新错误id 275；近20分钟正常开仓27笔/25臂/5代币。另外启用两个只读子代理并行产出洗出反事实与周期性复盘(结果下一轮并入)。",
       "scope": "新增：scripts/trade_context_ledger.py、tests/test_mark_outlier_guard.py、docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md；修改：src/memetrader/store.py（新增 _mark_is_plausible 与价格退出守卫，未改任何策略规则）。数据产物：data/reports/trade_context/trades_*.jsonl 与 review_*.json（在仓库忽略目录内）。",
-      "commit": "",
+      "commit": "ea9b3d4",
       "loaded_at": "2026-09-12T02:35:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md"
