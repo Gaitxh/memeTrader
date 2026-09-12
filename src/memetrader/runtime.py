@@ -5106,9 +5106,14 @@ class Runtime:
                 )
                 self._notify_source_error(f"dexscreener:{surface}", exc)
                 continue
-            if self.strategy_focus_active and decision.action == "CANDIDATE":
-                decision.action = "WAIT"
-                decision.rejected_reasons.append("strategy_focus_s1_paper_entry_paused")
+            # NOTE (2026-09-12): an orphaned block used to sit here and reference `decision.action`,
+            # a name that is never bound anywhere in this function. It is unreachable in the live
+            # system only because the `dexscreener:universe_*` lanes fail earlier and hit the
+            # exception branch above, but it made `token_universe_followup_once` fail with NameError
+            # the moment a quote batch succeeded - which is exactly what happens on a fresh install.
+            # The gate it referred to (`strategy_focus_s1_paper_entry_paused`) exists nowhere else in
+            # the codebase, and this loop makes no entry decision at all: it only persists snapshots
+            # and exposures, so the block is removed rather than re-bound.
             for item in chunk:
                 token_id = str(item["token_id"])
                 role = str(item["role"])
@@ -5546,9 +5551,18 @@ class Runtime:
                     apply_legacy_exploration=not self.chain_meme_trader_only,
                 )
             else:
+                # `token_universe_jupiter_quote_validity_results` records timing and forward validity
+                # only - it has no columns for the quote economics - and this store method therefore
+                # does not accept them. The shared payload carries `price_impact_bps` and
+                # `price_impact_source` for the sibling `record_onchain_only_jupiter_quote` (whose table
+                # does have those columns), so only this caller has to drop the two keys. Passing the
+                # payload verbatim raised TypeError("unexpected keyword argument 'price_impact_bps'")
+                # on the first successful quote; a fresh install hit it within one cycle.
+                validity_payload = {key: value for key, value in payload.items()
+                                    if key not in ("price_impact_bps", "price_impact_source")}
                 self.store.record_token_universe_jupiter_quote_validity(
                     item,
-                    **payload,
+                    **validity_payload,
                     requested_at=result.get("requested_at") or requested_at,
                     completed_at=result.get("completed_at") or completed_at,
                 )

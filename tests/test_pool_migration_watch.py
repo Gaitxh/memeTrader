@@ -11,39 +11,42 @@ from datetime import timedelta
 from memetrader.models import TokenCandidate, TokenSnapshot, utcnow
 from memetrader.runtime import Runtime
 
-# The freshness gate compares against the real clock inside `_remember_pattern_quotes`, so the fixture
-# must use it too: a fixed future timestamp would make every frame look fresh.
-NOW = utcnow()
+# The freshness gate compares against the real clock inside `_remember_pattern_quotes`, so every
+# fixture timestamp has to be built at CALL time. A module-level constant goes stale while a slow suite
+# runs (test_core alone takes minutes), and the gate then rejects frames that are meant to be fresh -
+# which is exactly how these two tests became flaky.
 OLD_POOL = 'OldPool1111111111111111111111111111111111'
 NEW_POOL = 'NewPool2222222222222222222222222222222222'
 ADDRESS = 'TokenAddr111111111111111111111111111111111'
 TOKEN_ID = f'solana:{ADDRESS}'
 
 
-def _snapshot(*, pool, created_at, liquidity, price=0.001, observed_at=NOW):
+def _snapshot(*, pool, created_at, liquidity, price=0.001, observed_at=None):
     raw = {'pair': {'pairAddress': pool, 'chainId': 'solana', 'priceUsd': str(price),
                     'pairCreatedAt': int(created_at.timestamp() * 1000),
                     'baseToken': {'address': ADDRESS},
                     'liquidity': {'usd': liquidity}}}
     return TokenSnapshot(chain='solana', address=ADDRESS, price_usd=price, liquidity_usd=liquidity,
                          market_cap_usd=1.0, volume_5m_usd=10.0, buys_5m=1, sells_5m=1,
-                         observed_at=observed_at, provider='dexscreener', raw=raw)
+                         observed_at=observed_at or utcnow(), provider='dexscreener', raw=raw)
 
 
 def _stub(*, old_liquidity, held=(), protected=()):
     """A watch entry for the ORIGINAL pool, plus a frame for the NEW (graduated) pool."""
-    old_created = NOW - timedelta(hours=3)
-    new_created = NOW - timedelta(minutes=5)
+    now = utcnow()
+    old_created = now - timedelta(hours=3)
+    new_created = now - timedelta(minutes=5)
     token = TokenCandidate('solana', ADDRESS, 'graduated')
-    old_quote = _snapshot(pool=OLD_POOL, created_at=old_created, liquidity=old_liquidity)
-    new_quote = _snapshot(pool=NEW_POOL, created_at=new_created, liquidity=25_000.0)
+    old_quote = _snapshot(pool=OLD_POOL, created_at=old_created, liquidity=old_liquidity,
+                          observed_at=now)
+    new_quote = _snapshot(pool=NEW_POOL, created_at=new_created, liquidity=25_000.0, observed_at=now)
     stub = types.SimpleNamespace(
         _pattern_watch={TOKEN_ID: {
             'token': token, 'bucket': 'growth', 'quote': old_quote,
             'pool_created_at_ms': float(int(old_created.timestamp() * 1000)),
-            'pair_address': OLD_POOL, 'expires_at': NOW + timedelta(minutes=10),
-            'admitted_at': NOW - timedelta(minutes=2), 'frame_count': 4,
-            'last_useful_at': NOW - timedelta(seconds=20)}},
+            'pair_address': OLD_POOL, 'expires_at': now + timedelta(minutes=10),
+            'admitted_at': now - timedelta(minutes=2), 'frame_count': 4,
+            'last_useful_at': now - timedelta(seconds=20)}},
         _chain_paper_execution={'min_pool_liquidity_usd': 1000.0},
         _pattern_held_tokens=set(held), _market_priority_tokens=set(),
         _pattern_pending_tokens=set(), _cohort_pending={}, _market_entry_pending_tokens=set(),
@@ -90,7 +93,7 @@ def test_a_held_token_is_never_migrated():
 
 def test_the_new_pool_must_be_newer():
     """Oscillating between two live listings is not a migration."""
-    old_created = NOW - timedelta(hours=3)
+    old_created = utcnow() - timedelta(hours=3)
     stale = _snapshot(pool=NEW_POOL, created_at=old_created - timedelta(hours=1), liquidity=25_000.0)
     stub, token, _ = _stub(old_liquidity=None)
     Runtime._remember_pattern_quotes(stub, {TOKEN_ID: (token, stale)})
@@ -100,7 +103,7 @@ def test_the_new_pool_must_be_newer():
 
 def test_the_new_pool_must_clear_the_liquidity_floor():
     stub, token, _ = _stub(old_liquidity=None)
-    thin = _snapshot(pool=NEW_POOL, created_at=NOW - timedelta(minutes=5), liquidity=250.0)
+    thin = _snapshot(pool=NEW_POOL, created_at=utcnow() - timedelta(minutes=5), liquidity=250.0)
     Runtime._remember_pattern_quotes(stub, {TOKEN_ID: (token, thin)})
     assert _watch(stub)['pair_address'] == OLD_POOL
     assert getattr(stub, '_pattern_watch_pool_migrations', 0) == 0
@@ -108,8 +111,9 @@ def test_the_new_pool_must_clear_the_liquidity_floor():
 
 def test_a_stale_new_pool_frame_is_refused():
     stub, token, _ = _stub(old_liquidity=None)
-    stale = _snapshot(pool=NEW_POOL, created_at=NOW - timedelta(minutes=5), liquidity=25_000.0,
-                      observed_at=NOW - timedelta(seconds=120))
+    now = utcnow()
+    stale = _snapshot(pool=NEW_POOL, created_at=now - timedelta(minutes=5), liquidity=25_000.0,
+                      observed_at=now - timedelta(seconds=120))
     Runtime._remember_pattern_quotes(stub, {TOKEN_ID: (token, stale)})
     assert _watch(stub)['pair_address'] == OLD_POOL
     assert getattr(stub, '_pattern_watch_pool_migrations', 0) == 0

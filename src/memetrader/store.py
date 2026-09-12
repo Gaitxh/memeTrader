@@ -20672,7 +20672,12 @@ class Store:
             if registration is None:
                 return {"inserted": 0, "modeled_executable": 0}
             definition = self._chain_meme_trader_effective_definition(
-                version, registration["definition_json"],
+                # `version` was never bound in this function; the registration lookup above uses this
+                # same constant, so that is what the effective definition must be resolved for. A fresh
+                # install hit the NameError on its first cycle, because the fixed-target registration
+                # does not exist in the live database and the call was therefore never reached there.
+                self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+                registration["definition_json"],
             )
             rows = self.db.execute(
                 """
