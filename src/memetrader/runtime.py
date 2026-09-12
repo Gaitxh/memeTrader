@@ -7682,6 +7682,16 @@ class Runtime:
                     quoted.setdefault(token_id, pair)
                 self._mover_reserved_injections = getattr(
                     self, '_mover_reserved_injections', 0) + len(injected)
+                # Which tokens were actually offered, so frames-per-injected-token can be measured
+                # offline instead of inferred from the flagged set as a whole (bounded, newest kept).
+                _injected = getattr(self, '_mover_injected_tokens', None)
+                if _injected is None:
+                    _injected = self._mover_injected_tokens = {}
+                for token_id in injected:
+                    _injected[token_id] = iso(current)
+                if len(_injected) > 60:
+                    for _old in sorted(_injected, key=_injected.get)[:len(_injected) - 60]:
+                        _injected.pop(_old, None)
         held = getattr(self, "_pattern_held_tokens", set())
         from .reactivation_watch import eligible as probe_eligible, victim as probe_victim, LEASE_SECONDS
         store = getattr(self, 'store', None)
@@ -8488,6 +8498,9 @@ class Runtime:
             # showed the old path reached the loop ~never, so injection and admission are counted
             # separately: injection is the reach, admission is the outcome.
             "mover_reserved_injections": getattr(self, "_mover_reserved_injections", 0),
+            # Which tokens the injection actually offered, so "reach" (offered) and "outcome"
+            # (admitted and observed) stay separable in the forward record.
+            "mover_injected_tokens": dict(getattr(self, '_mover_injected_tokens', {}) or {}),
             "mover_watching": (len(getattr(self, '_mover_watchlist', None).active(utcnow()))
                                if getattr(self, '_mover_watchlist', None) is not None else 0),
             # Which tokens the reservation admitted, so their observation counts can be measured
@@ -9629,6 +9642,25 @@ class Runtime:
                 asyncio.create_task(
                     self.chain_meme_v22_vault_shadow_loop(),
                     name="chain_meme_v22_vault_shadow",
+                ),
+                # HOLDER-CONCENTRATION SHADOW, revived for this deployment (2026-09-12). The lane
+                # only existed in the legacy task list below, which a chain-meme-only process never
+                # starts, so its enrollment cursor had been frozen at 2026-09-03T14:58:25Z and the
+                # system held NO holder data at all - `holders` is NULL in every snapshot row -
+                # while the data/feature request asks for holder concentration, new-holder growth
+                # and top-holder change. Same definition as registered
+                # (solana-holder-breadth-shadow/v1: append-only, decision_eligible=0, affects='none',
+                # 0.2% hash sample, horizons 0/15/60/240 min) and the same three RPC calls per
+                # observation, on api.mainnet-beta.solana.com, which is a different host from the
+                # DEX lanes and therefore does not consume their request budget.
+                asyncio.create_task(
+                    self._periodic(
+                        "solana_holder_shadow",
+                        max(300, float((self.config["sources"].get("solana_holder_shadow") or {}).get(
+                            "interval_seconds", 300))),
+                        self.solana_holder_shadow_once,
+                    ),
+                    name="solana_holder_shadow",
                 ),
             ]
             try:
