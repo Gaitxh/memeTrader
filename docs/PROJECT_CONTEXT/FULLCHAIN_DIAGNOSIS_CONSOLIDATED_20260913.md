@@ -1485,6 +1485,8 @@ key  coverage145:status                   -> 覆盖率自记账（opportunities 
 `base_caps = {early:3, growth:4, mature:3}`，`CHAIN_CAP = 10` → 3 链 × 10 = **30 个候选槽位**；
 **持仓不占这些槽位**（`runtime.py:7894` 只判 `if key not in held`），
 所以 FULL 的含义是**候选在队列里等**，不是持仓挤占。
+**收尾复测为 9/9 桶全满**（robinhood growth 也填满），而同时 mark 0.8 秒、snapshot 2.4 秒、
+入场判定 10.6 秒——**满仓是稳态，不是瞬时**。
 
 **更重要的产出是一个否证，它挡住了本轮本来会写下的标题。**
 报价路径**已经**触达远超 30 个的代币：15 分钟内 **280 个从未持仓的代币拿到了新报价**，
