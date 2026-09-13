@@ -80,6 +80,12 @@ def test_dex_proxy_requires_two_causal_frames_and_preserves_hard_veto(tmp_path, 
         filled_at=iso(clock[0]), definition=definition, reason="test",
         funding_mode="paper", signal_price_usd=1.0,
     )
+    waiting = store.db.execute(
+        "SELECT payload_json FROM chain_meme_pattern_evidence "
+        "WHERE kind='preentry_obvious_scam_v1' ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    assert "SKIP_DEX_PROXY_CONTINUITY" in waiting
+    assert "prior_exact_pool_frame_missing" in waiting
     clock[0] += timedelta(seconds=30)
     second = _snapshot(token, pool, clock[0], price=1.1, liquidity=5200)
     sid = store.add_snapshot(second)
@@ -103,6 +109,12 @@ def test_dex_proxy_requires_two_causal_frames_and_preserves_hard_veto(tmp_path, 
         filled_at=iso(clock[0]), definition=definition, reason="test",
         funding_mode="paper", signal_price_usd=1.1,
     )
+    rejected = store.db.execute(
+        "SELECT payload_json FROM chain_meme_pattern_evidence "
+        "WHERE kind='preentry_obvious_scam_v1' ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    assert "REJECT_DEX_PROXY" in rejected
+    assert "honeypot" in rejected
     store.close()
 
 

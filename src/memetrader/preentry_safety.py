@@ -334,7 +334,25 @@ class PreentrySafety:
         row = self.store.db.execute(
             "SELECT * FROM token_snapshots WHERE id=?", (snapshot_id,),
         ).fetchone()
+        item = dict(
+            version=version, cohort_id=cohort_id, token_id=token_id,
+            pool="", snapshot_id=snapshot_id, requested_at=filled_at,
+            reason=reason, notional=definition["policy_notional_usd"],
+            expires_at=iso(decision_at + timedelta(seconds=float(
+                definition.get("max_signal_to_execution_start_seconds", 120)))),
+            funding_mode=funding_mode, signal_price_usd=signal_price_usd,
+            shadow_costs={key: definition.get(key, default) for key, default in (
+                ("buy_slippage_bps", 400), ("sell_slippage_bps", 400),
+                ("additional_fee_usd_each_fill", 0.0),
+                ("min_pool_liquidity_usd", 1000),
+            )},
+        )
         if row is None:
+            self.record(item, "SKIP_DEX_PROXY_SNAPSHOT_MISSING", dict(
+                version=SAFETY_PROXY, status="SKIP", allow=False,
+                reasons=["snapshot_missing"], source_at=filled_at,
+                retryable=False, not_a_safety_guarantee=True,
+            ))
             return False
         try:
             chain, address = token_id.split(":", 1)
@@ -363,21 +381,13 @@ class PreentrySafety:
             trades = buys + sells
             buy_share = buys / trades if trades > 0 else 0.0
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            self.record(item, "SKIP_DEX_PROXY_INVALID_SNAPSHOT", dict(
+                version=SAFETY_PROXY, status="SKIP", allow=False,
+                reasons=["invalid_snapshot"], source_at=filled_at,
+                retryable=False, not_a_safety_guarantee=True,
+            ))
             return False
-
-        item = dict(
-            version=version, cohort_id=cohort_id, token_id=token_id,
-            pool=pool, snapshot_id=snapshot_id, requested_at=filled_at,
-            reason=reason, notional=definition["policy_notional_usd"],
-            expires_at=iso(decision_at + timedelta(seconds=float(
-                definition.get("max_signal_to_execution_start_seconds", 120)))),
-            funding_mode=funding_mode, signal_price_usd=signal_price_usd,
-            shadow_costs={key: definition.get(key, default) for key, default in (
-                ("buy_slippage_bps", 400), ("sell_slippage_bps", 400),
-                ("additional_fee_usd_each_fill", 0.0),
-                ("min_pool_liquidity_usd", 1000),
-            )},
-        )
+        item["pool"] = pool
 
         scope = rwa_metadata_scope(row, token_id, filled_at)
         registry = stock_registry_evidence(self.store.db, token_id, filled_at)
@@ -401,13 +411,24 @@ class PreentrySafety:
             return False
 
         floor = max(3000.0, float(definition.get("min_pool_liquidity_usd", 1000)))
-        current_ok = bool(
-            identity_ok and causal and math.isfinite(price) and price > 0
-            and math.isfinite(liquidity) and liquidity >= floor
-            and trades >= 4 and buy_share >= 0.55
-            and math.isfinite(volume) and volume >= max(100.0, liquidity * 0.02)
-            and not bool(definition.get("live_execution"))
-        )
+        current_failures = []
+        if not identity_ok:
+            current_failures.append("exact_pool_identity_mismatch")
+        if not causal:
+            current_failures.append("snapshot_noncausal_or_stale")
+        if not math.isfinite(price) or price <= 0:
+            current_failures.append("price_unavailable")
+        if not math.isfinite(liquidity) or liquidity < floor:
+            current_failures.append("liquidity_below_proxy_floor")
+        if trades < 4:
+            current_failures.append("insufficient_trade_activity")
+        if buy_share < 0.55:
+            current_failures.append("buy_share_below_proxy_floor")
+        if not math.isfinite(volume) or volume < max(100.0, liquidity * 0.02):
+            current_failures.append("volume_below_proxy_floor")
+        if bool(definition.get("live_execution")):
+            current_failures.append("paper_only_proxy")
+        current_ok = not current_failures
         prior = None
         if current_ok:
             rows = self.store.db.execute(
@@ -447,6 +468,19 @@ class PreentrySafety:
                     )
                     break
         if not current_ok or prior is None:
+            reasons = current_failures or ["prior_exact_pool_frame_missing"]
+            self.record(item, "SKIP_DEX_PROXY_CONTINUITY", dict(
+                version=SAFETY_PROXY, status="SKIP", allow=False,
+                reasons=reasons, source_at=iso(observed),
+                retryable=bool(not current_failures or set(current_failures) <= {
+                    "insufficient_trade_activity", "buy_share_below_proxy_floor",
+                    "volume_below_proxy_floor", "liquidity_below_proxy_floor",
+                }),
+                exact_pool=pool, current_snapshot_id=snapshot_id,
+                liquidity_usd=liquidity, trades_5m=trades,
+                buy_share=buy_share, volume_5m_usd=volume,
+                not_a_safety_guarantee=True,
+            ))
             return False
 
         assessment = dict(

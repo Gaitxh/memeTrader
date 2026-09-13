@@ -9727,6 +9727,7 @@ class Store:
         selected_chains = tuple(dict.fromkeys(
             str(chain).strip().lower() for chain in chains if str(chain).strip()
         ))
+        watched = tuple(dict.fromkeys(str(t) for t in priority_token_ids))[:3]
         chain_filter = ""
         chain_params: tuple[Any, ...] = ()
         if selected_chains:
@@ -9744,8 +9745,12 @@ class Store:
                     "SELECT * FROM token_detail_hydration WHERE status IN ('hydrated','no_pair','error') "
                     "AND followup_until>? AND next_attempt_at IS NOT NULL AND next_attempt_at<=? "
                     + ("AND chain=? " if chain else "")
-                    + "ORDER BY next_attempt_at,enqueued_at LIMIT ?",
-                    (due_at, due_at, chain, followup_limit) if chain else (due_at, due_at, followup_limit),
+                    + (f"ORDER BY CASE WHEN token_id IN ({','.join('?' for _ in watched)}) "
+                       "THEN 0 ELSE 1 END,followup_until,next_attempt_at,enqueued_at LIMIT ?"
+                       if watched else
+                       "ORDER BY followup_until,next_attempt_at,enqueued_at LIMIT ?"),
+                    ((due_at, due_at, chain, *watched, followup_limit) if chain else
+                     (due_at, due_at, *watched, followup_limit)),
                 )) for chain in (selected_chains or (None,))]
             for offset in range(followup_limit):
                 for group in groups:
@@ -9760,7 +9765,6 @@ class Store:
         )
         priority_order = ""
         priority_params: tuple[Any, ...] = ()
-        watched = tuple(dict.fromkeys(str(t) for t in priority_token_ids))[:3]
         if prefer_fresh:
             # A newly received migration needs one attempt even when its mint is old
             # and was not in the three-token pregraduation watch. Scan only the tail.

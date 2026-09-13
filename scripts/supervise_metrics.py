@@ -231,15 +231,19 @@ def shadow_cap(con, version, minutes, cap=10):
 def stability(con, hours):
     unresolved = [dict(row) for row in con.execute(
         "SELECT area, component, error_type, message_safe, occurrence_count, first_seen_at, last_seen_at "
-        "FROM system_error_cases WHERE status!='resolved' ORDER BY last_seen_at DESC LIMIT 15")]
+        "FROM system_error_cases WHERE status IN ('new','in_progress') "
+        "ORDER BY julianday(last_seen_at) DESC LIMIT 15")]
     fresh = [dict(row) for row in con.execute(
         "SELECT component, error_type, occurrence_count, first_seen_at, last_seen_at "
-        "FROM system_error_cases WHERE last_seen_at>=datetime('now',?) ORDER BY last_seen_at DESC LIMIT 10",
+        "FROM system_error_cases WHERE status IN ('new','in_progress') "
+        "AND julianday(last_seen_at)>=julianday('now',?) "
+        "ORDER BY julianday(last_seen_at) DESC LIMIT 10",
         (f"-{int(hours)} hour",))]
     active = [dict(row) for row in con.execute(
         "SELECT component, error_type, occurrence_count, first_seen_at, last_seen_at "
-        "FROM system_error_cases WHERE last_seen_at>=datetime('now','-15 minute') "
-        "ORDER BY last_seen_at DESC LIMIT 10")]
+        "FROM system_error_cases WHERE status IN ('new','in_progress') "
+        "AND julianday(last_seen_at)>=julianday('now','-15 minute') "
+        "ORDER BY julianday(last_seen_at) DESC LIMIT 10")]
     sources = [dict(row) for row in con.execute(
         "SELECT source, last_ok_at, last_error_at, last_error FROM source_health "
         "ORDER BY COALESCE(last_ok_at,'') DESC LIMIT 12")]
@@ -249,6 +253,103 @@ def stability(con, hours):
     return {"unresolved_errors": unresolved, "new_error_cases": fresh,
             "active_error_cases": active,
             "sources": sources, "hydration_queue": hydration}
+
+
+def execution_integrity(con, version, minutes, grace_seconds=180):
+    """Bounded causal/accounting checks without pretending Paper marks are quotes.
+
+    An admitted row is a strategy match, not execution authorization.  It is
+    nevertheless unsafe to let an old match disappear without either a position,
+    participant outcome, or explicit pre-entry evidence explaining the skip/wait.
+    """
+    window = f"-{int(minutes)} minute"
+    grace = f"-{int(grace_seconds)} second"
+    decisions = dict(con.execute(
+        """WITH recent AS (
+               SELECT d.* FROM chain_meme_trader_entry_decisions d
+               WHERE d.definition_version=? AND d.status='admitted'
+                 AND julianday(d.decided_at)>=julianday('now',?)
+             )
+             SELECT COUNT(*) admitted,
+               SUM(julianday(decided_at)<=julianday('now',?)) matured,
+               SUM(EXISTS(SELECT 1 FROM chain_meme_trader_entry_participant_outcomes o
+                          WHERE o.definition_version=recent.definition_version
+                            AND o.shadow_cohort_id=recent.shadow_cohort_id
+                            AND o.arm_id=recent.arm_id)) participant_outcome,
+               SUM(EXISTS(SELECT 1 FROM chain_meme_trader_positions p
+                          WHERE p.definition_version=recent.definition_version
+                            AND p.shadow_cohort_id=recent.shadow_cohort_id
+                            AND p.arm_id=recent.arm_id)) position,
+               SUM(EXISTS(SELECT 1 FROM chain_meme_pattern_evidence e
+                          WHERE e.definition_version=recent.definition_version
+                            AND e.token_id=recent.token_id
+                            AND e.kind='preentry_obvious_scam_v1'
+                            AND e.source_key LIKE CAST(recent.shadow_cohort_id AS TEXT)||':%')) safety_evidence,
+               SUM(julianday(decided_at)<=julianday('now',?)
+                   AND NOT EXISTS(SELECT 1 FROM chain_meme_trader_entry_participant_outcomes o
+                                  WHERE o.definition_version=recent.definition_version
+                                    AND o.shadow_cohort_id=recent.shadow_cohort_id
+                                    AND o.arm_id=recent.arm_id)
+                   AND NOT EXISTS(SELECT 1 FROM chain_meme_trader_positions p
+                                  WHERE p.definition_version=recent.definition_version
+                                    AND p.shadow_cohort_id=recent.shadow_cohort_id
+                                    AND p.arm_id=recent.arm_id)
+                   AND NOT EXISTS(SELECT 1 FROM chain_meme_pattern_evidence e
+                                  WHERE e.definition_version=recent.definition_version
+                                    AND e.token_id=recent.token_id
+                                    AND e.kind='preentry_obvious_scam_v1'
+                                    AND e.source_key LIKE CAST(recent.shadow_cohort_id AS TEXT)||':%')) unaccounted_matured
+             FROM recent""", (version, window, grace, grace)).fetchone())
+    for key, value in list(decisions.items()):
+        decisions[key] = int(value or 0)
+    safety = [dict(row) for row in con.execute(
+        "SELECT json_extract(payload_json,'$.safety_status') status,COUNT(*) n "
+        "FROM chain_meme_pattern_evidence WHERE definition_version=? "
+        "AND kind='preentry_obvious_scam_v1' "
+        "AND julianday(recorded_at)>=julianday('now',?) GROUP BY status ORDER BY n DESC LIMIT 20",
+        (version, window))]
+    orphan_fills = int(con.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills f "
+        "WHERE f.definition_version=? AND julianday(f.filled_at)>=julianday('now',?) "
+        "AND NOT EXISTS(SELECT 1 FROM chain_meme_trader_positions p "
+        "WHERE p.definition_version=f.definition_version AND p.shadow_cohort_id=f.entry_cohort_id "
+        "AND p.source_entry_fill_id=f.id)", (version, window)).fetchone()[0])
+    bad_position_fill_links = int(con.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions p "
+        "LEFT JOIN chain_meme_trader_v6_entry_fills f ON f.id=p.source_entry_fill_id "
+        "WHERE p.definition_version=? AND julianday(p.opened_at)>=julianday('now',?) "
+        "AND p.source_entry_fill_id IS NOT NULL AND (f.id IS NULL "
+        "OR f.definition_version<>p.definition_version OR f.entry_cohort_id<>p.shadow_cohort_id "
+        "OR f.token_id<>p.token_id)", (version, window)).fetchone()[0])
+    fill_modes = [dict(row) for row in con.execute(
+        "SELECT CASE WHEN execution_attempt_id<0 THEN 'dex_mark_synthetic_paper' "
+        "ELSE 'order_intent_execution_path' END mode,COUNT(*) n "
+        "FROM chain_meme_trader_v6_entry_fills WHERE definition_version=? "
+        "AND julianday(filled_at)>=julianday('now',?) GROUP BY mode",
+        (version, window))]
+    return {"window_minutes": int(minutes), "grace_seconds": int(grace_seconds),
+            "admitted": decisions, "safety_statuses": safety,
+            "orphan_entry_fills": orphan_fills,
+            "bad_position_fill_links": bad_position_fill_links,
+            "fill_modes": fill_modes,
+            "paper_boundary": "dex_mark_synthetic_paper_is_not_live_quote_or_execution_evidence"}
+
+
+def continuity_health(con):
+    due = dict(con.execute(
+        "SELECT COUNT(*) due, "
+        "ROUND(MAX((julianday('now')-julianday(next_attempt_at))*86400.0),1) oldest_late_s, "
+        "SUM(julianday(followup_until)<=julianday('now','+5 minute')) deadline_5m "
+        "FROM token_detail_hydration WHERE julianday(followup_until)>julianday('now') "
+        "AND next_attempt_at IS NOT NULL AND julianday(next_attempt_at)<=julianday('now')"
+    ).fetchone())
+    marks = {}
+    for table in ("chain_meme_trader_market_marks", "chain_meme_trader_pool_marks"):
+        marks[table] = dict(con.execute(
+            f"SELECT COUNT(*) total, SUM(julianday(observed_at)<julianday('now','-30 second')) stale_30s, "
+            f"SUM(julianday(observed_at)<julianday('now','-120 second')) stale_120s FROM {table}"
+        ).fetchone())
+    return {"due_followups": due, "current_mark_age": marks}
 
 
 def reviews(metrics):
@@ -304,6 +405,23 @@ def reviews(metrics):
                                  f"positions ({shadow.get('blocked_share_pct')}%) worth "
                                  f"{shadow.get('blocked_realized_pnl')}U realized "
                                  f"(observation only: nothing is blocked)"))
+    continuity = metrics.get("continuity") or {}
+    due = continuity.get("due_followups") or {}
+    if (due.get("due") or 0) > 100:
+        flags.append(dict(level="error", code="dex_followup_backlog",
+                          detail=f"{due.get('due')} lifecycle follow-ups are due; oldest is "
+                                 f"{due.get('oldest_late_s')}s late and {due.get('deadline_5m')} "
+                                 f"reach deadline within five minutes"))
+    integrity = metrics.get("execution_integrity") or {}
+    admitted = integrity.get("admitted") or {}
+    if (admitted.get("unaccounted_matured") or 0) > 0:
+        flags.append(dict(level="error", code="admitted_without_auditable_outcome",
+                          detail=f"{admitted.get('unaccounted_matured')} matured admitted arm-decisions "
+                                 f"have no position, participant outcome, or pre-entry evidence"))
+    if (integrity.get("bad_position_fill_links") or 0) > 0:
+        flags.append(dict(level="error", code="position_fill_lineage_broken",
+                          detail=f"{integrity.get('bad_position_fill_links')} recent positions have "
+                                 f"missing or mismatched source-entry fills"))
     if (metrics["capacity"]["cash_p10"] or 0) < 5.0:
         flags.append(dict(level="warn", code="capacity_floor",
                           detail=f"p10 arm cash {metrics['capacity']['cash_p10']}U"))
@@ -365,6 +483,12 @@ def markdown(metrics):
         f"{metrics['shadow_cap']['blocked_realized_pnl']}U",
         f"- unresolved error cases: {len(metrics['stability']['unresolved_errors'])} · "
         f"new in window: {len(metrics['stability']['new_error_cases'])}",
+        f"- DEX lifecycle follow-ups due: {metrics['continuity']['due_followups']['due']} · "
+        f"oldest late {metrics['continuity']['due_followups']['oldest_late_s']}s",
+        f"- admitted audit: {metrics['execution_integrity']['admitted']['admitted']} matched · "
+        f"{metrics['execution_integrity']['admitted']['unaccounted_matured']} matured without auditable outcome · "
+        f"bad position/fill links {metrics['execution_integrity']['bad_position_fill_links']}",
+        f"- Paper boundary: {metrics['execution_integrity']['paper_boundary']}",
         "",
         "**Review triggers**",
     ]
@@ -395,6 +519,8 @@ def main():
             "economics": economics(con, version, args.hours),
             "capacity": capacity(con, version),
             "stability": stability(con, args.hours),
+            "continuity": continuity_health(con),
+            "execution_integrity": execution_integrity(con, version, args.minutes),
         }
     finally:
         con.close()
@@ -417,6 +543,8 @@ def main():
             "open_now": metrics["economics"]["open"]["n"],
             "write_offs": metrics["economics"]["write_offs"]["n"],
             "cash_p10": metrics["capacity"]["cash_p10"],
+            "due_followups": metrics["continuity"]["due_followups"]["due"],
+            "unaccounted_admitted": metrics["execution_integrity"]["admitted"]["unaccounted_matured"],
             "flags": [flag["code"] for flag in metrics["review"]],
         }, ensure_ascii=False) + "\n")
     if args.json_only:

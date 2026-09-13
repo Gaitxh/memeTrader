@@ -3092,10 +3092,21 @@ class Runtime:
             offset = cursor % len(hydration_chains)
             hydration_chains = hydration_chains[offset:] + hydration_chains[:offset]
             self._hydration_followup_chain_cursor = cursor + 1
+        # Keep the existing request ceiling and batches, but reserve enough of
+        # each cycle for causal follow-up frames.  The previous hard cap of two
+        # starved thousands of already-hydrated opportunities even while the
+        # total ten-item fast-cycle budget had spare capacity.
+        followup_limit = 0
+        if self.chain_meme_trader_only and max_hydrations > 1:
+            followup_share = 0.80 if hydration_only else 0.50
+            followup_limit = min(
+                max_hydrations - 1,
+                max(1, int(max_hydrations * followup_share)),
+            )
         due = self.store.due_token_detail_hydrations(
             limit=max_hydrations,
             chains=tuple(hydration_chains) if self.chain_meme_trader_only else (),
-            followup_limit=min(2, max_hydrations // 5) if self.chain_meme_trader_only else 0,
+            followup_limit=followup_limit,
             prefer_fresh=self.chain_meme_trader_only,
             priority_token_ids=tuple(x["token_id"] for x in self._pregrad_watch.ranked(now=utcnow()))
                 if getattr(self, "_pregrad_watch", None) else (),

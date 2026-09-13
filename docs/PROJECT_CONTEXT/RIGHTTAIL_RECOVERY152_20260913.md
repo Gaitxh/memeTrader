@@ -63,7 +63,12 @@ They had 49–95 terminal positions each and cost-adjusted realized Paper PNL be
 
 ## Evidence boundary and next evaluation
 
-Engineering acceptance is complete for discovery -> evaluation -> admission -> Paper fill -> position entry. Profitability, right-tail capture, and superiority of the wide exit remain pending natural forward samples. Compare the matched pair only after sufficient independent token cohorts, using cost-adjusted outcome, maximum favorable/adverse excursion, stale/unpriceable exposure, and exit failure rate. Do not select the winner from early account PNL ranking.
+Engineering acceptance is complete for discovery -> evaluation -> strategy match -> DEX-mark synthetic Paper fill -> position entry. This path uses the exact-pool market snapshot and the configured 400 bps Paper cost assumption; it does **not** create an order intent, request a live route quote, or exercise an execution adapter. It must not be described as proof of real quote/execution availability. Profitability, right-tail capture, and superiority of the wide exit remain pending natural forward samples. Compare the matched pair only after sufficient independent token cohorts, using cost-adjusted outcome, maximum favorable/adverse excursion, stale/unpriceable exposure, and exit failure rate. Do not select the winner from early account PNL ranking.
+
+The follow-up audit found that six of the first 18 admitted arm decisions had no
+position, participant outcome, or safety evidence. Pipeline assurance 153 adds
+explicit `SKIP_DEX_PROXY_*` evidence for every proxy-false path and monitors this
+invariant. See `PIPELINE_ASSURANCE153_20260913.md`.
 
 ## Code and rollback
 
