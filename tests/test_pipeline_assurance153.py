@@ -27,7 +27,7 @@ def test_followup_selection_prioritizes_watched_token_before_oldest_due(tmp_path
     store.close()
 
 
-def test_fast_hydration_cycle_reserves_eighty_percent_for_followups(tmp_path):
+def test_fast_hydration_cycle_uses_one_full_batch_and_reserves_followups(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -39,8 +39,8 @@ def test_fast_hydration_cycle_reserves_eighty_percent_for_followups(tmp_path):
             captured.append(kwargs) or []
         )
         await runtime.poll_dexscreener_discovery_once(hydration_only=True)
-        assert captured[0]["limit"] == 10
-        assert captured[0]["followup_limit"] == 8
+        assert captured[0]["limit"] == 30
+        assert captured[0]["followup_limit"] == 24
         await runtime.close()
 
     asyncio.run(scenario())

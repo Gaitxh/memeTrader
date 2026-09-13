@@ -3044,7 +3044,10 @@ class Runtime:
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         if hydration_only:
-            max_hydrations = min(10, max_hydrations // 18)
+            # DexScreener accepts thirty token addresses in the same batch.
+            # Use that payload capacity on the five-second lane without adding
+            # another HTTP request or relaxing the configured global ceiling.
+            max_hydrations = min(30, max_hydrations)
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
         onchain_context_candidates: list[
             tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]

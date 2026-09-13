@@ -51,8 +51,9 @@ the replay is observational and order-dependent.
 
 ## Implemented engineering fixes
 
-1. The five-second hydration cycle now reserves up to 8/10 existing batch slots for
-   lifecycle follow-ups while retaining at least two first-hydration slots. The full
+1. The five-second hydration cycle now uses the provider's existing 30-address batch
+   payload and reserves up to 24/30 slots for lifecycle follow-ups while retaining at
+   least six first-hydration slots. This remains one HTTP batch. The full
    discovery cycle reserves at most half of its existing budget. Total request and
    concurrency ceilings are unchanged.
 2. Follow-up selection remains chain-fair, but within each chain it prioritizes an
@@ -73,7 +74,8 @@ the replay is observational and order-dependent.
   pre-existing failures remain in dirty-worktree active-version and partial-runtime
   fixtures. They are not caused by this patch and are not represented as passing.
 - Rollback: revert the assurance commit. This restores the prior 2/10 follow-up
-  allocation and removes the new evidence/monitoring only; database history remains
+  allocation and 10-address fast batch, and removes the new evidence/monitoring only;
+  database history remains
   append-only.
 
 ## Forward acceptance gates
