@@ -24262,6 +24262,8 @@ class Store:
             behavior["revision_exit_policy"] = dict(policy.get("revision_exit_policy") or {})
         if policy.get("dynamic_principal_recovery"):
             behavior["dynamic_principal_recovery"] = policy["dynamic_principal_recovery"]
+        if policy.get('composite_exit151'):
+            behavior['composite_exit151'] = dict(policy['composite_exit151'])
         for name in ("entry_match_mode", "entry_revision_kind", "capital_revision_kind", "research_overlay"):
             if policy.get(name) is not None:
                 behavior[name] = str(policy[name])
@@ -26687,6 +26689,41 @@ class Store:
                 self.append_chain_meme_trader_policy(policy, activated_at=at)
                 added += 1
             return added
+
+    def register_chain_meme_composite151_experiment(self) -> int:
+        """One additive Paper package; never update its control or re-enable retirees."""
+        from .composite_exit151 import ARM, PARENT, policy as composite_policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            if self.db.execute(
+                'SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',
+                (version, ARM)).fetchone():
+                return 0
+            parent = self.db.execute(
+                'SELECT policy_json FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',
+                (version, PARENT)).fetchone()
+            if parent is None:
+                return 0
+            self.append_chain_meme_trader_policy(
+                composite_policy(self._json_object(parent['policy_json'])), activated_at=utcnow())
+            return 1
+
+    def register_chain_meme_market_proxy151_experiments(self) -> int:
+        from .market_proxy151 import SPECS, policy as proxy_policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        added = 0
+        with self._lock, self.db:
+            for arm, (_, _, parent_arm) in SPECS.items():
+                if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions '
+                    'WHERE definition_version=? AND arm_id=?', (version, arm)).fetchone():
+                    continue
+                parent = self.db.execute('SELECT policy_json FROM chain_meme_trader_policy_additions '
+                    'WHERE definition_version=? AND arm_id=?', (version, parent_arm)).fetchone()
+                if parent is not None:
+                    self.append_chain_meme_trader_policy(
+                        proxy_policy(self._json_object(parent['policy_json']), arm), activated_at=utcnow())
+                    added += 1
+        return added
 
     def register_chain_meme_exit_ladder_experiments(self) -> int:
         """Append the EXIT-LADDER150 arms: a clean single-factor take-profit level dose-response.
@@ -35932,6 +35969,7 @@ class Store:
                         trigger_evidence.update(revised[2])
                         sell_amount = int(position["amount_raw"])
                 if (action is None and policy.get('dynamic_principal_recovery')
+                        and not policy.get('composite_exit151')
                         and not int(position['principal_recovered'] or 0)
                         and mark_status=='VISIBLE' and position['mark_observed_at']
                         and position['mark_recorded_at']
@@ -35975,6 +36013,29 @@ class Store:
                         action,reason='CAPITAL_EXIT',decay
                         sell_amount=int(position['amount_raw'])
                         trigger_evidence['dex_trajectory_exit']=vector
+                if action is None and policy.get('composite_exit151') and mark_status == 'VISIBLE':
+                    from .composite_exit151 import evaluate as composite151_evaluate
+                    outer151 = self._json_object(position['capital_exit_state_json'])
+                    state151, evidence151 = composite151_evaluate(dict(position), dict(
+                        token_id=position['token_id'], pair_address=position['mark_pair_address'],
+                        status=mark_status, sequence=position['sample_sequence'],
+                        observed_at=position['mark_observed_at'], recorded_at=position['mark_recorded_at'],
+                        price=position['mark_price_usd'], liquidity=position['mark_liquidity_usd'],
+                        buys=position['mark_buys_5m'], sells=position['mark_sells_5m']),
+                        outer151.get('composite151'), current)
+                    if state151 != outer151.get('composite151'):
+                        outer151['composite151'] = state151
+                        self.db.execute('UPDATE chain_meme_trader_positions SET capital_exit_state_json=? '
+                            'WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?',
+                            (self._json(outer151), version, arm_id, position['shadow_cohort_id']))
+                    if evidence151 and not int(position['principal_recovered'] or 0):
+                        from .age_rate_revisions import next_frame_minimum_principal_recovery_raw
+                        recovery151 = next_frame_minimum_principal_recovery_raw(dict(position),
+                            {'market_price_usd': position['mark_price_usd']}, definition, policy=policy)
+                        if recovery151 is not None:
+                            action, reason = 'PRINCIPAL_RECOVERY', 'confirmed_market_decay_net_recovery151'
+                            sell_amount = recovery151
+                            trigger_evidence['composite151'] = evidence151
                 if action is None or sell_amount <= 0:
                     continue
                 # Defect guard (round 3): a dust-liquidity outlier print must not be

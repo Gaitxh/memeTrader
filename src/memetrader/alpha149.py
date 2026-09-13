@@ -2172,6 +2172,8 @@ class Engine(_BaseEngine):
                 'price_usd': previous.get('price_usd'),
                 'liquidity_usd': previous.get('liquidity_usd'),
                 'volume_5m_usd': previous.get('volume_5m_usd'),
+                'buys_5m': previous.get('buys_5m'),
+                'sells_5m': previous.get('sells_5m'),
                 'observed_at': previous.get('observed_at')}}
             if len(rows) >= 3:
                 before = rows[-3]
@@ -3274,6 +3276,12 @@ def mechanisms(f):  # noqa: F811 - wave 42 wrapper over the wave-41 wrapper
 # receipts can compare one isolated exit variable without rewriting any
 # existing policy or position.
 CONFIRMED_STOP_STEADY_V2 = 'alpha149_confirmed_stop_steady_v2'
+from .composite_exit151 import ARM as COMPOSITE151_ARM, CONTRACT as COMPOSITE151_CONTRACT
+SPECS[COMPOSITE151_ARM] = ('survivable_steady', '组合退出151·衰减回本', 60)
+OVERRIDES[COMPOSITE151_ARM] = dict(OVERRIDES['alpha149_moonbag_steady_v1'],
+    composite_exit151=COMPOSITE151_CONTRACT.copy(), dynamic_principal_recovery='confirmed_decay151',
+    trajectory_exit='alpha149_vol_scaled_stop', hard_stop_return=-.50,
+    excess_return_vs_arm='alpha149_moonbag_steady_v1')
 SPECS.update({
     CONFIRMED_STOP_STEADY_V2: (
         'survivable_steady', '确认止损V2·安全带同入口', 30,
@@ -3299,6 +3307,19 @@ OVERRIDES.update({
     ),
 })
 GUARD_ARMS = GUARD_ARMS | frozenset({CONFIRMED_STOP_STEADY_V2})
+from .market_proxy151 import SPECS as PROXY151_SPECS, DESCRIPTIONS as PROXY151_DESCRIPTIONS
+for _arm151, (_kind151, _name151, _parent151) in PROXY151_SPECS.items():
+    SPECS[_arm151] = (_kind151, _name151, 30)
+    OVERRIDES[_arm151] = dict(OVERRIDES[_parent151], description=PROXY151_DESCRIPTIONS[_kind151],
+                             excess_return_vs_arm=_parent151)
+_pre_proxy151_mechanisms = mechanisms
+
+def mechanisms(f):  # additive available-data arms only; all existing flags unchanged
+    from .market_proxy151 import flags
+    result = _pre_proxy151_mechanisms(f)
+    result.update(flags(f))
+    return result
+
 ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
 

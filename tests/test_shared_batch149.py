@@ -140,3 +140,64 @@ def test_snapshot_exposes_alpha149_counters():
     for key in ('eligible_batch', 'no_spare', 'selected_extra', 'inflight_skipped',
                 'failed_request', 'cancelled_request'):
         assert key in snap['alpha149']
+
+
+def test_runtime_cancellation_releases_claim_before_45_second_timeout(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from memetrader.runtime import Runtime
+
+    async def run():
+        manager = _coverage_with_waiting(1)
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime._shared_batch148 = manager
+        @asynccontextmanager
+        async def slot(**kwargs):
+            yield True
+        runtime._dex_quote_slot = slot
+        async def cancelled(*args):
+            assert manager.inflight
+            raise asyncio.CancelledError()
+        runtime.dex = SimpleNamespace(batch_quote_fresh=cancelled)
+        monkeypatch.setattr('memetrader.runtime.utcnow', lambda: NOW)
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._dex_batch_quote(CHAIN, ['0xabc'], fresh=True, allow_shared_spares149=True)
+        assert not manager.inflight
+        assert manager.counts['cancelled_request'] == 1
+        _, selected = manager.extend_batch_lease(CHAIN, ['0xabc'], NOW)
+        assert selected, 'cancelled request must leave next existing batch usable immediately'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('provider,accepted', [
+    ('dexscreener', True), ('strategy-observer:dexscreener', True),
+    ('geckoterminal', True), ('strategy-observer:geckoterminal', True),
+    ('unknown-dexscreener-cache', False), ('promotion', False),
+])
+def test_normalized_seed_provenance_only_grants_bounded_acquisition(provider, accepted):
+    from test_shared_batch148 import asset
+    token, snap = asset(1, NOW)
+    snap.provider = provider
+    manager = SharedBatchCoverage()
+    assert manager.offer(token, snap, NOW) is accepted
+    assert not manager.active  # seed is not a quote, signal, or funded position
+    assert manager.snapshot(NOW)['additional_http_batches'] == 0
+    if accepted:
+        _, selected = manager.extend_batch_lease(CHAIN, ['0xabc'], NOW)
+        assert selected
+        wrong = _Snap(NOW + timedelta(seconds=1))
+        wrong.raw = {'pair': {'pairAddress': 'wrong', 'chainId': CHAIN,
+                              'baseToken': {'address': token.address}}}
+        assert manager.response({token.token_id: (token, wrong)}, selected,
+                                NOW + timedelta(seconds=1), lambda pair: wrong) == {}
+
+
+def test_empty_candidate_and_full_batch_counters_are_not_conflated():
+    manager = SharedBatchCoverage()
+    manager.extend_batch_lease(CHAIN, ['0xabc'], NOW)
+    manager.extend_batch_lease(CHAIN, [str(i) for i in range(30)], NOW)
+    assert manager.counts['eligible_batch'] == 1
+    assert manager.counts['no_due_candidate'] == 1
+    assert manager.counts['full_batch'] == 1

@@ -22,6 +22,7 @@ def setup(tmp_path,monkeypatch):
     clock=[utcnow()]
     monkeypatch.setattr('memetrader.store.utcnow',lambda:clock[0])
     monkeypatch.setattr('memetrader.models.utcnow',lambda:clock[0])
+    monkeypatch.setattr('memetrader.runtime.utcnow',lambda:clock[0])
     store=Store(tmp_path/'native138.sqlite3',initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period();register(store)
     from memetrader.preentry_safety import PreentrySafety
@@ -66,7 +67,31 @@ def setup(tmp_path,monkeypatch):
     return store,clock,p
 
 
-def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatch):
+def test_native_held_waits_for_fresh_wsol_reference_without_attempting_settlement(tmp_path, monkeypatch):
+    store, clock, plan = setup(tmp_path, monkeypatch)
+    assert buy(store, plan, now=clock[0]) == "BOUGHT"
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = store
+    runtime._wsol_usdc_conversion = None
+
+    async def unavailable_reference(**kwargs):
+        return None
+
+    runtime.chain_meme_wsol_reference_once = unavailable_reference
+    asyncio.run(runtime._native_held_once(targets(store)[0]))
+
+    status = store.get_kv("native-paper:last-held")
+    assert status["status"] == "WAIT_REFERENCE_CLOCK"
+    assert len(targets(store)) == 1
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='SELL'",
+        (ARM,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+@pytest.mark.parametrize('concurrent_reference_refresh', [False, True])
+def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatch,concurrent_reference_refresh):
     store,clock,p=setup(tmp_path,monkeypatch)
     before=store.db.execute('SELECT count(*) FROM chain_meme_trader_trades').fetchone()[0]
     assert buy(store,p,now=clock[0])=='BOUGHT'
@@ -95,10 +120,17 @@ def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatc
         current_quote[0]=dict(surfaces[0],pool_address=surfaces[0]['curve_address'],context_slot=slot[0],
             requested_at=iso(clock[0]),completed_at=iso(clock[0]),status='LOCAL_SURFACE_CURRENT',reason='',native_curve_state=c,**q)
         return [current_quote[0]]
-    async def fee(c,plan,q):return dict(context_slot=q['context_slot'],recorded_at=iso(clock[0]),fee_lamports=7000,
-        token_amount_raw=int(q['remaining_amount_raw']),curve=q['pool_address'],account_id=plan['account_id'],message_sha256='a'*64)
+    async def fee(c,plan,q):
+        if concurrent_reference_refresh:
+            # The periodic reference worker can publish while getFeeForMessage
+            # awaits RPC. That later reference was not known at quote request.
+            clock[0] += timedelta(milliseconds=50)
+            runtime._wsol_usdc_conversion = dict(p['reference'], completed_at=iso(clock[0]))
+        return dict(context_slot=q['context_slot'],recorded_at=iso(clock[0]),fee_lamports=7000,
+            token_amount_raw=int(q['remaining_amount_raw']),curve=q['pool_address'],account_id=plan['account_id'],message_sha256='a'*64)
     monkeypatch.setattr('memetrader.pump_native_cash.exit_fee',fee)
     monkeypatch.setattr('memetrader.native_execution.utcnow',lambda:clock[0])
+    monkeypatch.setattr('memetrader.runtime.utcnow',lambda:clock[0])
     runtime.held_accounts=SimpleNamespace(bonding_curve_quotes=quotes)
     clock[0]+=timedelta(seconds=301)
     asyncio.run(runtime._native_held_once(targets(store)[0]))

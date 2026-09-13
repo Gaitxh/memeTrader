@@ -202,7 +202,7 @@ def test_real_tagged_callback_safety_later_buy_exit_without_legacy_fanout(tmp_pa
         await deliver(7)
         with store._lock,store.db:gate.resume(token,snapshots[-1],clock[0])
         p=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARMS[1],)).fetchone()
-        assert p is not None and p['stake_usd']==2
+        assert p is not None and p['stake_usd']==20  # current uniform Paper contract
         assert p['opened_at']>iso(start+timedelta(seconds=30))
         for _ in range(2):
             clock[0]+=timedelta(seconds=2)

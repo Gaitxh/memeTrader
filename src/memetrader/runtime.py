@@ -1427,6 +1427,10 @@ class Runtime:
                     # difference. The 20-minute window is read from the acceptance loop's own
                     # `history`, so this costs no extra query.
                     self.store.register_chain_meme_runup_floor_experiments()
+                    if self.config.get('optimization151', {}).get('composite_exit_enabled', True):
+                        self.store.register_chain_meme_composite151_experiment()
+                    if self.config.get('optimization151', {}).get('market_proxy_enabled', True):
+                        self.store.register_chain_meme_market_proxy151_experiments()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
@@ -1792,6 +1796,10 @@ class Runtime:
                         self.dex.batch_quote(chain, addresses),
                         timeout=float(getattr(self, "dex_low_priority_request_deadline", 20.0)),
                     ) if not high_priority else await self.dex.batch_quote(chain, addresses)
+            except asyncio.CancelledError:
+                if selected_alpha149 and manager_alpha149 is not None:
+                    manager_alpha149.release(selected_alpha149, utcnow(), reason='cancelled_request')
+                raise
             except TimeoutError:
                 if selected_alpha149 and manager_alpha149 is not None:
                     manager_alpha149.release(selected_alpha149, utcnow(), reason='request_deadline')
@@ -6996,6 +7004,9 @@ class Runtime:
         await self.chain_meme_wsol_reference_once(observed_pool=True)
         state=target['state'];plan=state['plan']
         reference = getattr(self, "_wsol_usdc_conversion", None)
+        # Freeze the conversion visible before this quote. The reference worker
+        # may publish a newer value during either awaited quote/fee RPC.
+        reference = dict(reference) if isinstance(reference, dict) else None
         reference_fresh = False
         if isinstance(reference, dict) and reference.get("completed_at"):
             try:
@@ -7005,7 +7016,7 @@ class Runtime:
                 reference_fresh = False
         # A failed refresh may retain diagnostics for 60 seconds, but native
         # USD settlement accepts only a 30-second reference.
-        if state['surface'] == 'CURVE' and not reference_fresh:
+        if state['surface'] in ('CURVE', 'PUMPSWAP') and not reference_fresh:
             self.store.set_kv('native-paper:last-held', dict(
                 status='WAIT_REFERENCE_CLOCK', recorded_at=iso(),
                 token_id=target['token_id'], cohort_id=target['cohort_id'],
@@ -7035,7 +7046,7 @@ class Runtime:
                 native_entry_quote_raw=int(accounting.get('entry_quote_raw',0)),
                 native_entry_token_raw=int(accounting.get('entry_token_raw',0)))
             quotes=await self.held_accounts.bonding_curve_quotes([surface],slippage_bps=400,
-                wsol_usdc_conversion=self._wsol_usdc_conversion)
+                wsol_usdc_conversion=reference)
         for quote in quotes:
             fee=None
             fee_error=None
@@ -7045,7 +7056,20 @@ class Runtime:
                         else exit_fee(self.held_accounts,plan,quote))
                 except (ValueError,KeyError) as exc:
                     fee_error=type(exc).__name__+':'+str(exc)[:160]
-            result=apply_curve_quote(self.store,target,quote,fee,self._wsol_usdc_conversion)
+            if quote.get('status') == 'LOCAL_SURFACE_CURRENT' and fee is not None:
+                from .native_execution import usd_per_raw
+                try:
+                    usd_per_raw(reference, utcnow(), parse_time(quote['requested_at']))
+                except (ValueError, KeyError, TypeError):
+                    # RPC latency can exhaust a once-fresh reference. Obtain a
+                    # new quote next pass; never reprice the old quote retroactively.
+                    self.store.set_kv('native-paper:last-held', dict(
+                        status='WAIT_REFERENCE_CLOCK', recorded_at=iso(),
+                        token_id=target['token_id'], cohort_id=target['cohort_id'],
+                        surface=state['surface'], observed_at=quote.get('requested_at'),
+                    ))
+                    continue
+            result=apply_curve_quote(self.store,target,quote,fee,reference)
             self.store.set_kv('native-paper:last-held',dict(status=result,recorded_at=iso(),
                 token_id=target['token_id'],cohort_id=target['cohort_id'],surface=state['surface'],
                 quote_status=quote.get('status'),quote_reason=quote.get('reason'),fee_error=fee_error,
@@ -9813,7 +9837,8 @@ class Runtime:
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
                    'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','alpha149.py','mode_learning144.py',
-                   'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py')
+                   'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
+                   'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},
@@ -9832,7 +9857,10 @@ class Runtime:
             self.notifier.send("bridge_started", "browser bridge", {"host": bridge_cfg.get("host"), "port": bridge_cfg.get("port")})
 
         if self.chain_meme_trader_only:
+            from .forward_review151 import run as forward_review151_run
             tasks = [
+                *([asyncio.create_task(forward_review151_run(self), name='forward_review151')]
+                  if self.config.get('optimization151', {}).get('review_enabled', True) else []),
                 asyncio.create_task(self._periodic('narrative_hold_v2', 15, self.narrative_hold.once), name='narrative_hold_v2'),
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 *(asyncio.create_task(self.dex_discovery_stream_loop(surface),

@@ -157,11 +157,15 @@ class RuntimeTiming:
                 "interval_sample_count": len(intervals),
                 "actual_interval_seconds": {
                     "p50": _percentile(intervals, 0.50),
+                    "p90": _percentile(intervals, 0.90),
                     "p95": _percentile(intervals, 0.95),
+                    "p99": _percentile(intervals, 0.99),
                 },
                 "duration_seconds": {
                     "p50": _percentile(durations, 0.50),
+                    "p90": _percentile(durations, 0.90),
                     "p95": _percentile(durations, 0.95),
+                    "p99": _percentile(durations, 0.99),
                 },
                 "failures": timing["failures"],
                 "items": timing["items"],
@@ -179,7 +183,9 @@ class RuntimeTiming:
                 "wait_sample_count": len(self._passive_waits),
                 "wait_seconds": {
                     "p50": _percentile(self._passive_waits, 0.50),
+                    "p90": _percentile(self._passive_waits, 0.90),
                     "p95": _percentile(self._passive_waits, 0.95),
+                    "p99": _percentile(self._passive_waits, 0.99),
                 },
             },
             "held_retrieval": {

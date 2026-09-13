@@ -24,8 +24,8 @@ def test_runtime_timing_snapshot_percentiles_and_counters():
     assert component == {
         "sample_count": 4,
         "interval_sample_count": 4,
-        "actual_interval_seconds": {"p50": 25.0, "p95": 38.5},
-        "duration_seconds": {"p50": 2.5, "p95": 3.8499999999999996},
+        "actual_interval_seconds": {"p50": 25.0, "p90": 37.0, "p95": 38.5, "p99": 39.699999999999996},
+        "duration_seconds": {"p50": 2.5, "p90": 3.7, "p95": 3.8499999999999996, "p99": 3.9699999999999998},
         "failures": 1,
         "items": 12,
         "configured_interval_seconds": 1.0,
@@ -114,8 +114,8 @@ def test_activity_ledger_names_every_component_ever_observed():
     component = timing.snapshot()["components"]["mark_batch"]
     assert component["sample_count"] == 1
     assert component["interval_sample_count"] == 0
-    assert component["actual_interval_seconds"] == {"p50": None, "p95": None}
-    assert component["duration_seconds"] == {"p50": 0.25, "p95": 0.25}
+    assert component["actual_interval_seconds"] == {"p50": None, "p90": None, "p95": None, "p99": None}
+    assert component["duration_seconds"] == {"p50": 0.25, "p90": 0.25, "p95": 0.25, "p99": 0.25}
     assert component["configured_interval_seconds"] is None
 
 

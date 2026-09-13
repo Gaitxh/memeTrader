@@ -18,6 +18,8 @@ FRESH_SECONDS = 30
 # the same extra. Self-expiring, so a lost caller can never hold a claim.
 INFLIGHT_SECONDS = 45
 CHAINS = frozenset(('bsc', 'solana', 'robinhood'))
+SEED_PROVIDERS = frozenset(('dexscreener', 'strategy-observer:dexscreener',
+                            'geckoterminal', 'strategy-observer:geckoterminal'))
 
 
 def _finite(value):
@@ -81,13 +83,23 @@ class SharedBatchCoverage:
         volume = _finite(snapshot.volume_5m_usd)
         buys, sells = _finite(snapshot.buys_5m), _finite(snapshot.sells_5m)
         count = buys + sells if buys is not None and sells is not None else None
-        if (not pool or pair.get('chainId') != chain or base != canonical_token_address(chain, token.address)
-                or 'dexscreener' not in str(snapshot.provider).lower() or created is None
-                or not 0 <= snapshot.observed_at.timestamp() - created / 1000 <= 900
-                or not 0 <= (now - snapshot.observed_at).total_seconds() <= FRESH_SECONDS
-                or price is None or price <= 0 or liquidity is None or liquidity < floor
-                or not ((count is not None and count >= 3) or (volume is not None and volume >= 200))):
-            return False
+        # Both collectors normalize this identity-bound pool schema. The seed
+        # grants acquisition only; every follow-up still needs the frozen pool.
+        checks = (
+            ('identity', bool(pool) and pair.get('chainId') == chain
+             and base == canonical_token_address(chain, token.address)),
+            ('provider', str(snapshot.provider).lower() in SEED_PROVIDERS),
+            ('pool_age', created is not None and 0 <= snapshot.observed_at.timestamp() - created / 1000 <= 900),
+            ('freshness', 0 <= (now - snapshot.observed_at).total_seconds() <= FRESH_SECONDS),
+            ('price', price is not None and price > 0),
+            ('liquidity', liquidity is not None and liquidity >= floor),
+            ('activity', (count is not None and count >= 3) or (volume is not None and volume >= 200)),
+        )
+        self.counts['SEED_CHECKED'] += 1
+        for reason, valid in checks:
+            if not valid:
+                self.counts['SEED_REJECT_' + reason] += 1
+                return False
         if sum(v['chain'] == chain for v in self.waiting.values()) >= MAX_WAITING_PER_CHAIN:
             self.counts['WAITING_CAPACITY'] += 1
             return False
@@ -97,6 +109,7 @@ class SharedBatchCoverage:
             pool_created_at_ms=created, floor=float(floor), coverage_gap=False,
             next_due_at=now, windows={}, frame2_delay_seconds=None, frame3_delay_seconds=None)
         self.counts['OFFERED'] += 1
+        self.counts['OFFERED_PROVIDER_' + str(snapshot.provider).lower()] += 1
         return True
 
     def extend_batch(self, chain, legacy_addresses, now, *, excluded=()):
@@ -156,6 +169,7 @@ class SharedBatchCoverage:
             return legacy, {}
         if not (-len(legacy)) % 30:
             self.counts['no_spare'] += 1
+            self.counts['full_batch'] += 1
             return legacy, {}
         self.counts['eligible_batch'] += 1
         extended, selected = self.extend_batch(chain, legacy, now, excluded=excluded)
@@ -168,6 +182,7 @@ class SharedBatchCoverage:
                                  if t in self.active]
         if not selected:
             self.counts['no_spare'] += 1
+            self.counts['no_due_candidate'] += 1
             return legacy, {}
         assert ceil(len(extended) / 30) == ceil(len(legacy) / 30), 'spare capacity changed'
         until = now + timedelta(seconds=INFLIGHT_SECONDS)
