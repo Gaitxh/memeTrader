@@ -143,6 +143,24 @@ def test_the_panel_truncation_caveat_is_documented():
         "the docstring must name the parameter that truncates the panel")
 
 
+def test_the_min_observe_until_filter_is_documented_as_the_binding_one():
+    """The round-87 correction.
+
+    `dump_state` skips any item whose `min_observe_until` has passed (observation_leases145.py:301-303),
+    and that deadline is `admitted_at + 120 s` (EARLY_LEASE_SECONDS) extended only on a phase
+    transition. Round 87 measured the live panel holding 4-8 rows while the watch reported 30 occupied
+    candidate slots, so this filter -- not the 30-row limit -- is what bounds the panel. The docstring
+    must say both, and must say the panel therefore over-represents fresh leases, because "lower bound"
+    alone invites the reader to treat it as a random sample.
+    """
+    doc = " ".join((lpr.__doc__ or "").split())
+    assert "min_observe_until" in doc, (
+        "the docstring must name the filter that actually bounds the panel")
+    assert "120" in doc, "the docstring must give the 120 s early-lease deadline it comes from"
+    assert "OVER-represents" in doc or "over-represents" in doc, (
+        "the docstring must state that the panel is biased toward fresh leases, not merely short")
+
+
 def test_candidate_slot_caps_match_the_runtime_constants():
     """The occupancy readout compares against base_caps; if these drift the FULL flags are wrong."""
     sys.path.insert(0, str(ROOT / "src"))

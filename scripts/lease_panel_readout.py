@@ -34,13 +34,21 @@ token population, so only WITHIN-ROW shares are comparable. Quoting a column tot
 tokens" would be a unit error of exactly the kind this project has made repeatedly.
 
 SECOND CAVEAT, about the lease list itself: the persisted lease count is a LOWER BOUND, not a
-population. `observation_leases145.dump_state(watch, now, *, limit: int = 30)` caps the checkpoint at
-30 rows and `bounded_summary()` defaults to the same limit. Round 86 first printed "live leases: 9"
-as though it were how many tokens the scheduler held; it is a truncated window whose tightness cannot
-be judged from the panel alone. For a count that IS a direct read of runtime state, use
-`non_held_by_chain_bucket` from `chain-meme-pattern-watch`: it is computed in memory from the same
-counter that gates admission (runtime.py:8148-8150 against runtime.py:7894-7898) and reports
-occupancy against `base_caps`.
+population, and it is not even a random sample of leases. Two filters apply:
+
+  * `observation_leases145.dump_state` keeps only rows whose `min_observe_until` is still in the
+    FUTURE (lines 301-303), and `min_observe_until` is set to `admitted_at + 120 s` and extended only
+    on a phase transition. Round 87 measured a live panel holding 4-8 rows while the watch held 30
+    occupied candidate slots, so the binding filter was this one, not the row limit.
+  * `dump_state(watch, now, *, limit: int = 30)` then caps the list at 30 rows and
+    `bounded_summary()` defaults to the same limit.
+
+The practical consequence is that the panel reads as a rolling window over roughly the last two
+minutes of admissions plus phase-extended leases, so it OVER-represents fresh and phase-transitioning
+leases. Round 86 first printed "live leases: 9" as though it were how many tokens the scheduler held.
+For a count that IS a direct read of runtime state, use `non_held_by_chain_bucket` from
+`chain-meme-pattern-watch`: it is computed in memory from the same counter that gates admission
+(runtime.py:8148-8150 against runtime.py:7894-7898) and reports occupancy against `base_caps`.
 
 Read-only: opens the database with mode=ro and writes nothing.
 
