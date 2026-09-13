@@ -287,15 +287,76 @@ def main() -> int:
               f"({100.0*over/len(lags):.2f}%)")
 
     print("\n" + "=" * 84)
+    print("5. THE HEALTHY WINDOW -- how long the pool stayed tradeable, and what was seen")
+    print("=" * 84)
+    print("   This is the measurement that decides whether an exit COULD have acted. Note carefully:")
+    print("   the gap from the LAST healthy mark to the write-off is a few seconds (the final sliver),")
+    print("   but the SUSTAINED period above the floor is minutes. Confusing the two turns 'ample time")
+    print("   with no action' into 'no time to act'.")
+    marks2 = collections.defaultdict(list)
+    for r in c.execute("""select token_id, observed_at, price_usd, liquidity_usd
+                          from chain_meme_trader_market_mark_history
+                          where price_usd is not null and price_usd > 0
+                          order by token_id, observed_at"""):
+        t = parse(r["observed_at"])
+        if t is not None:
+            marks2[str(r["token_id"])].append(
+                (t, float(r["price_usd"]),
+                 (float(r["liquidity_usd"]) if r["liquidity_usd"] is not None else None)))
+    spans, nmarks, peak_h, peak_l = [], [], [], []
+    for r in c.execute("""select token_id, opened_at, closed_at, entry_execution_price_usd ex,
+                                 entry_signal_price_usd en
+                          from chain_meme_trader_positions
+                          where status in ('closed','written_off') and closed_at is not null
+                            and close_reason like ?""", (WRITEOFF_PREFIX + "%",)):
+        op, cl = parse(r["opened_at"]), parse(r["closed_at"])
+        if op is None or cl is None:
+            continue
+        try:
+            ep = float(r["ex"] or r["en"])
+        except (TypeError, ValueError):
+            continue
+        if ep <= 0:
+            continue
+        inlife = [x for x in marks2.get(str(r["token_id"]), []) if op <= x[0] <= cl]
+        healthy = [x for x in inlife if x[2] is not None and x[2] >= args.floor]
+        if len(healthy) < 3:
+            continue
+        spans.append((healthy[-1][0] - healthy[0][0]).total_seconds())
+        nmarks.append(len(healthy))
+        peak_h.append(max(econ(x[1] / ep) for x in healthy))
+        peak_l.append(max(econ(x[1] / ep) for x in inlife))
+    if spans:
+        m2 = len(spans)
+        print(f"\n   positions with a measurable healthy window: {m2}")
+        print("   span above the floor:      " +
+              "   ".join(f"p{int(q*100)} {percentile(spans,q):,.0f}s" for q in (0.25, 0.50, 0.75)))
+        print("   known-liquidity marks in it: " +
+              "   ".join(f"p{int(q*100)} {percentile(nmarks,q):,.0f}" for q in (0.25, 0.50)))
+        print(f"   span >= 300 s : {100.0*sum(1 for x in spans if x>=300)/m2:.1f}%"
+              f"    marks >= 5 : {100.0*sum(1 for x in nmarks if x>=5)/m2:.1f}%")
+        ph = percentile(peak_h, 0.5)
+        pl = percentile(peak_l, 0.5)
+        print(f"\n   peak econ WHILE healthy: p50 {ph:+.4f}      peak over the whole life: p50 "
+              f"{pl:+.4f}")
+        if pl is not None and ph is not None and abs(ph - pl) < 1e-9:
+            print("   (identical on this data: every gain the position ever had was visible while the")
+            print("    pool was still tradeable - so the exit rules were not starved of information.)")
+        summary["healthy_span_p50_s"] = percentile(spans, 0.5)
+        summary["healthy_marks_p50"] = percentile(nmarks, 0.5)
+        summary["peak_while_healthy_p50"] = ph
+
+    print("\n" + "=" * 84)
     print("WHAT THIS DOES NOT SHOW")
     print("=" * 84)
-    print("   That changing any level would have captured the gain. The running high is only known")
-    print("   after it is exceeded, and a real-time rule acts on the frame it sees. Round 43 showed")
-    print("   the take-profit's in-sample marginal value on the KEPT book was about zero once entry")
-    print("   filters were applied. Nothing here is a counterfactual, and changing a gate threshold")
-    print("   or an exit level is a strategy change: per the project rule it must be deployed as an")
-    print("   ADDITIONAL strategy module with its own forward evidence, never by editing an existing")
-    print("   strategy.")
+    print("""   THIS COHORT ONLY. Every figure above describes positions that ENDED in a dust write-off. A
+   more aggressive exit rule also acts on positions that would have recovered or run on to large
+   gains, and that cost is NOT measured here. Whether acting earlier helps the BOOK depends on how
+   many eventual winners it sacrifices, which is unknown and could decide the sign.
+   Also: an upper bound by construction if you simulate selling at the last healthy mark, 4% adverse
+   slippage is not modelled, and it is a single-epoch in-sample reading. Changing an exit level is a
+   strategy change: per the project rule it must be an ADDITIONAL strategy module with its own forward
+   evidence, never an edit to an existing strategy.""")
     if args.json:
         print("\n" + json.dumps(summary, indent=2, default=str))
     return 0

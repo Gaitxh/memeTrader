@@ -175,6 +175,62 @@ def test_live_writeoff_evidence_is_retained_and_confirms_a_dust_pool():
 
 @pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
                     reason="live forward database not present")
+def test_live_healthy_window_is_minutes_not_seconds():
+    """The round-81 property, asserted because the opposite reading is easy and was made once.
+
+    While drafting round 81 I measured 'the LAST healthy mark is ~7 s before the write-off' and wrote
+    'the median healthy span is of the order of ten seconds'. The 7 s is the final sliver; the SPAN is
+    minutes. The distinction decides the whole conclusion: a seconds-long window means no rule could
+    react, a minutes-long one means the information was there and was not acted on.
+
+    This asserts the span is minutes and that the marks inside it are plentiful, so the reading cannot
+    silently flip back.
+    """
+    c = sqlite3.connect(f"file:{ROOT / 'data' / 'memetrader_forward.sqlite3'}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    marks = {}
+    for r in c.execute("""select token_id, observed_at, price_usd, liquidity_usd
+                          from chain_meme_trader_market_mark_history
+                          where price_usd is not null and price_usd > 0
+                          order by token_id, observed_at"""):
+        t = wor.parse(r["observed_at"])
+        if t is not None:
+            marks.setdefault(str(r["token_id"]), []).append(
+                (t, float(r["price_usd"]),
+                 (float(r["liquidity_usd"]) if r["liquidity_usd"] is not None else None)))
+    spans, counts, last_gaps = [], [], []
+    for r in c.execute("""select token_id, opened_at, closed_at
+                          from chain_meme_trader_positions
+                          where status in ('closed','written_off') and closed_at is not null
+                            and close_reason like ?""", (wor.WRITEOFF_PREFIX + "%",)):
+        op, cl = wor.parse(r["opened_at"]), wor.parse(r["closed_at"])
+        if op is None or cl is None:
+            continue
+        healthy = [x for x in marks.get(str(r["token_id"]), [])
+                   if op <= x[0] <= cl and x[2] is not None and x[2] >= wor.DEFAULT_FLOOR]
+        if len(healthy) < 3:
+            continue
+        spans.append((healthy[-1][0] - healthy[0][0]).total_seconds())
+        counts.append(len(healthy))
+        last_gaps.append((cl - healthy[-1][0]).total_seconds())
+    if len(spans) < 50:
+        pytest.skip("too few measurable healthy windows")
+
+    med_span = wor.percentile(spans, 0.5)
+    med_last = wor.percentile(last_gaps, 0.5)
+    med_count = wor.percentile(counts, 0.5)
+    assert med_span > 120, (
+        f"median healthy span is {med_span:.0f}s - if this ever drops to seconds, no rule could "
+        f"react and the round-81 reading ('the information was available') would be wrong")
+    assert med_count >= 5, (
+        f"median known-liquidity marks in the window is {med_count:.0f}; too few to act on")
+    assert med_last < med_span / 5, (
+        f"the last-healthy-mark gap ({med_last:.0f}s) should be a small fraction of the span "
+        f"({med_span:.0f}s); if the two converge, the distinction round 81 drew has collapsed")
+
+
+@pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
+                    reason="live forward database not present")
 def test_live_activation_comparison_uses_per_arm_contracts():
     """The coverage-gap claim requires per-arm activation levels, and requires that the majority of
     the cohort never reaches its OWN arm's level.
