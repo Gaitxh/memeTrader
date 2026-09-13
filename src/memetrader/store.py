@@ -26727,6 +26727,33 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_righttail_recovery152_experiments(self) -> int:
+        """Append one matched-entry short/wide Paper pair; preserve every old arm."""
+        from .righttail_recovery152 import ARMS, policy as recovery_policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        added = 0
+        with self._lock, self.db:
+            parent = self.db.execute(
+                "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, "alpha149_trade_activity_growth_proxy_v1"),
+            ).fetchone()
+            if parent is None:
+                return 0
+            base = self._json_object(parent["policy_json"])
+            for arm_id in ARMS:
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?",
+                    (version, arm_id),
+                ).fetchone():
+                    continue
+                self.append_chain_meme_trader_policy(
+                    recovery_policy(base, arm_id), activated_at=utcnow(),
+                )
+                added += 1
+        return added
+
     def register_chain_meme_exit_ladder_experiments(self) -> int:
         """Append the EXIT-LADDER150 arms: a clean single-factor take-profit level dose-response.
 
@@ -29134,12 +29161,35 @@ class Store:
                 if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)
         self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)
-        if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
-                token_id=token_id,snapshot_id=snapshot_id,filled_at=filled_at,
-                definition=definition,reason=reason,funding_mode=funding_mode,
-                signal_price_usd=signal_price_usd):
-            self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
-            return 0
+        if safety is not None:
+            by_policy = {str(p.get("arm_id")): p for p in definition["policies"]}
+            proxy_decisions = [
+                d for d in decisions
+                if by_policy.get(str(d["arm_id"]), {}).get("paper_safety_proxy")
+                == "causal-dex-continuity/152-v1"
+            ]
+            regular_decisions = [d for d in decisions if d not in proxy_decisions]
+            regular_authorized = False
+            if regular_decisions:
+                regular_authorized = safety.guard(
+                    version=version, cohort_id=cohort_id, token_id=token_id,
+                    snapshot_id=snapshot_id, filled_at=filled_at,
+                    definition=definition, reason=reason,
+                    funding_mode=funding_mode, signal_price_usd=signal_price_usd,
+                )
+            if not regular_authorized:
+                proxy_authorized = bool(proxy_decisions) and safety.dex_proxy_guard(
+                    version=version, cohort_id=cohort_id, token_id=token_id,
+                    snapshot_id=snapshot_id, filled_at=filled_at,
+                    definition=definition, reason=reason,
+                    funding_mode=funding_mode, signal_price_usd=signal_price_usd,
+                )
+                if not proxy_authorized:
+                    self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
+                    return 0
+                # Missing optional security fields may authorize only the opt-in
+                # 152 Paper pair. Existing strategy behavior remains unchanged.
+                decisions = proxy_decisions
         trajectory_arms={p['arm_id'] for p in definition['policies'] if p.get('requires_distinct_trajectory_frame') or p.get('conditional_trajectory_frame')}
         if trajectory_arms.intersection(str(d['arm_id']) for d in decisions):
             cohort=self.db.execute('SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()

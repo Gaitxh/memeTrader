@@ -1431,6 +1431,10 @@ class Runtime:
                         self.store.register_chain_meme_composite151_experiment()
                     if self.config.get('optimization151', {}).get('market_proxy_enabled', True):
                         self.store.register_chain_meme_market_proxy151_experiments()
+                    # RIGHTTAIL152: one merged available-data entry with a short/wide
+                    # exit pair. Only these new Paper arms may use the causal DEX
+                    # approximation when optional security APIs yield no usable fact.
+                    self.store.register_chain_meme_righttail_recovery152_experiments()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
@@ -8432,10 +8436,11 @@ class Runtime:
                                              else "cross_provider_receipt:" + receipt[2])
                 histories = state.get("token_frames", {}).get(f"{identity[0]}|{identity[1]}", [])
                 first_seen = (histories[0].get("discovered_at") if histories else None) or iso(received)
-                # MOVER WATCH-LIST (measured 2026-09-12): a token whose FIRST observation shows
+                # MOVER WATCH-LIST: a token whose first QUALIFYING observation shows
                 # either >=20k depth with buy share >= 0.6, or <=20k depth with 5-minute turnover
                 # above 1.0, doubles within the hour 1.2-1.9x more often than the population. The
-                # registry only reads this first observation, is bounded, and never raises.
+                # v2 registry lets an earlier curve/thin/missing frame wait for a later usable
+                # surface, but still decides only from the current causal frame.
                 watchlist = getattr(self, "_mover_watchlist", None)
                 if watchlist is None:
                     from .mover_watchlist import Registry as _MoverRegistry
@@ -8444,7 +8449,7 @@ class Runtime:
                     buys_5m=snapshot.buys_5m, sells_5m=snapshot.sells_5m,
                     volume_5m_usd=snapshot.volume_5m_usd, now=received)
                 if _mover_rule is not None:
-                    # Keep this first frame so the pattern observer can offer the token a reserved
+                    # Keep this qualifying frame so the pattern observer can offer the token a reserved
                     # slot on its next tick (round 108). Bounded, newest kept, no extra request.
                     _mover_cache = getattr(self, '_mover_first_quote', None)
                     if _mover_cache is None:

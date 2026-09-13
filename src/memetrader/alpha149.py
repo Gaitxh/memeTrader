@@ -3435,3 +3435,31 @@ ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
 RUNUP_FLOOR150_ARMS = tuple(sorted(_rf150.ARMS))
 
+
+# ---- wave 45: right-tail recovery152 ----------------------------------------
+# Two forward-only Paper arms share one merged, available-data entry signal and
+# differ only in their exit contract.  They do not replace or mutate the 151
+# proxy arms.  The opt-in safety proxy is enforced by PreentrySafety and only
+# applies when this exact arm reaches the common Paper projection path.
+from . import righttail_recovery152 as _rr152  # noqa: E402
+
+for _arm152 in _rr152.ARMS:
+    SPECS[_arm152] = (
+        _rr152.SIGNAL_KIND,
+        "静默加速152·短持对照" if _arm152 == _rr152.CONTROL_ARM else "静默加速152·右尾宽持",
+        30 if _arm152 == _rr152.CONTROL_ARM else 180,
+    )
+
+_pre_righttail152_mechanisms = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - additive wrapper over all earlier mechanisms
+    result = _pre_righttail152_mechanisms(f)
+    result[_rr152.SIGNAL_KIND] = _rr152.signal(result)
+    return result
+
+
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+RIGHTTAIL_RECOVERY152_ARMS = _rr152.ARMS
+

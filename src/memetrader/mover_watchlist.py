@@ -13,9 +13,11 @@ mid-depth pool dominated by buys, and a small frantic pool) and their recall is 
 the union catches about a third of the tokens that double, so this is a density improvement on the
 watched set, not a detector.
 
-Admission reads ONLY the first observation of a token, so nothing later can leak into it. The
-registry is bounded and in-memory: it never raises, never writes, and if it is full the youngest
-qualifying token wins only when an expired slot exists.
+Admission reads the first *qualifying* observation of a token. Earlier missing/curve-stage/thin
+frames remain rejected, but do not permanently blind the token after it migrates or becomes a
+usable pool. Every decision is causal at that frame; no later outcome is read. The registry is
+bounded and in-memory: it never raises, never writes, and if it is full the token may try again
+only when an already-observed qualifying frame reaches this function through a normal feed.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ MID_POOL_MIN_LIQUIDITY = 20_000.0
 MID_POOL_MIN_BUY_SHARE = 0.6
 SMALL_POOL_MAX_LIQUIDITY = 20_000.0
 SMALL_POOL_MIN_TURNOVER = 1.0
-VERSION = 'mover-watchlist/v1'
+VERSION = 'mover-watchlist/v2-first-qualifying-surface'
 
 
 def _num(value: Any) -> float | None:
@@ -89,7 +91,11 @@ class Registry:
         self.watch_seconds = float(watch_seconds)
         self.entries: dict[str, tuple[datetime, str]] = {}
         self.counts: Counter = Counter()
+        # ``seen`` means a qualifying frame was admitted or deliberately retired;
+        # a non-qualifying first frame must not permanently suppress a later pool
+        # migration/usable-liquidity frame for the same token.
         self.seen: set[str] = set()
+        self.waiting: dict[str, datetime] = {}
 
     def _expire(self, now: datetime) -> None:
         dead = [token for token, (until, _rule) in self.entries.items() if until <= now]
@@ -101,24 +107,29 @@ class Registry:
     def consider(self, token_id: str, *, liquidity_usd: Any, buys_5m: Any = None,
                  sells_5m: Any = None, volume_5m_usd: Any = None,
                  now: datetime) -> str | None:
-        """Evaluate a token's FIRST observation once. Returns the admitting rule, or None."""
+        """Admit the token's first qualifying causal frame, not necessarily its first frame."""
         if not token_id:
             return None
         self._expire(now)
         if token_id in self.seen:
             self.counts['already_considered'] += 1
             return None
-        self.seen.add(token_id)
-        if len(self.seen) > 200_000:  # bound the dedup set as well
-            self.seen = set(list(self.seen)[-100_000:])
         rule = admission(liquidity_usd=liquidity_usd, buys_5m=buys_5m, sells_5m=sells_5m,
                          volume_5m_usd=volume_5m_usd)
         if rule is None:
             self.counts['rejected'] += 1
+            self.waiting[token_id] = now
+            if len(self.waiting) > 100_000:
+                for old, _ in sorted(self.waiting.items(), key=lambda item: item[1])[:50_000]:
+                    self.waiting.pop(old, None)
             return None
         if len(self.entries) >= self.max_watched:
             self.counts['full'] += 1
             return None
+        self.seen.add(token_id)
+        self.waiting.pop(token_id, None)
+        if len(self.seen) > 200_000:  # bound the dedup set as well
+            self.seen = set(list(self.seen)[-100_000:])
         self.entries[token_id] = (now + timedelta(seconds=self.watch_seconds), rule)
         self.counts['admitted:' + rule] += 1
         return rule
@@ -146,6 +157,7 @@ class Registry:
             'watching': len(self.entries),
             'max_watched': self.max_watched,
             'watch_seconds': self.watch_seconds,
+            'waiting_for_first_qualifying_surface': len(self.waiting),
             'counts': dict(self.counts),
         }
 

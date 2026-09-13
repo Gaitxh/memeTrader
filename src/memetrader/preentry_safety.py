@@ -318,6 +318,154 @@ class PreentrySafety:
             self.pending[str(cohort_id)]=item;self.save();self.record(item,'WAIT_SECURITY')
         return False
 
+    def dex_proxy_guard(self, *, version, cohort_id, token_id, snapshot_id,
+                        filled_at, definition, reason, funding_mode,
+                        signal_price_usd=None):
+        """Authorize only opt-in Paper arms from two causal exact-pool DEX frames.
+
+        This is not a safety verdict.  It preserves every explicit scope,
+        behavior and hard-risk veto, then substitutes a small, observable market
+        continuity envelope only when an additive strategy explicitly declares
+        ``paper_safety_proxy=causal-dex-continuity/152-v1``.
+        """
+        from .righttail_recovery152 import SAFETY_PROXY
+
+        decision_at = parse_time(filled_at)
+        row = self.store.db.execute(
+            "SELECT * FROM token_snapshots WHERE id=?", (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            chain, address = token_id.split(":", 1)
+            raw = json.loads(row["raw_json"])
+            pair = raw.get("pair") or raw
+            pool = canonical_token_address(chain, str(pair.get("pairAddress") or ""))
+            observed = parse_time(row["observed_at"])
+            ingested = parse_time(row["ingested_at"] or row["recorded_at"])
+            recorded = parse_time(row["recorded_at"])
+            base = pair.get("baseToken") or {}
+            identity_ok = bool(
+                pool
+                and str(pair.get("chainId") or "").lower() == chain.lower()
+                and canonical_token_address(chain, str(base.get("address") or ""))
+                == canonical_token_address(chain, address)
+            )
+            causal = bool(
+                observed <= ingested <= recorded <= decision_at
+                and 0 <= (decision_at - observed).total_seconds() <= 30
+            )
+            price = float(row["price_usd"] or 0)
+            liquidity = float(row["liquidity_usd"] or 0)
+            buys = float(row["buys_5m"] or 0)
+            sells = float(row["sells_5m"] or 0)
+            volume = float(row["volume_5m_usd"] or 0)
+            trades = buys + sells
+            buy_share = buys / trades if trades > 0 else 0.0
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+        item = dict(
+            version=version, cohort_id=cohort_id, token_id=token_id,
+            pool=pool, snapshot_id=snapshot_id, requested_at=filled_at,
+            reason=reason, notional=definition["policy_notional_usd"],
+            expires_at=iso(decision_at + timedelta(seconds=float(
+                definition.get("max_signal_to_execution_start_seconds", 120)))),
+            funding_mode=funding_mode, signal_price_usd=signal_price_usd,
+            shadow_costs={key: definition.get(key, default) for key, default in (
+                ("buy_slippage_bps", 400), ("sell_slippage_bps", 400),
+                ("additional_fee_usd_each_fill", 0.0),
+                ("min_pool_liquidity_usd", 1000),
+            )},
+        )
+
+        scope = rwa_metadata_scope(row, token_id, filled_at)
+        registry = stock_registry_evidence(self.store.db, token_id, filled_at)
+        behavior = self.behavior(item, decision_at)
+        original = self.store.token_snapshot_by_id(snapshot_id)
+        known = assess(original, self.checker, source_at=iso(original.observed_at))
+        veto = []
+        if scope["status"] == "EXCLUDED_NON_MEME_RWA":
+            veto.append(scope["reason"])
+        if registry is not None and registry["status"] == "EXCLUDED_STOCK_TOKEN":
+            veto.append(registry["reason"])
+        veto.extend(behavior["hard_veto"])
+        veto.extend(behavior["soft_hazard"])
+        veto.extend(known["hard_veto"])
+        if veto:
+            self.record(item, "REJECT_DEX_PROXY", dict(
+                version=SAFETY_PROXY, status="REJECT", allow=False,
+                reasons=sorted(set(veto)), source_at=iso(observed),
+                external_assessment=known, not_a_safety_guarantee=True,
+            ))
+            return False
+
+        floor = max(3000.0, float(definition.get("min_pool_liquidity_usd", 1000)))
+        current_ok = bool(
+            identity_ok and causal and math.isfinite(price) and price > 0
+            and math.isfinite(liquidity) and liquidity >= floor
+            and trades >= 4 and buy_share >= 0.55
+            and math.isfinite(volume) and volume >= max(100.0, liquidity * 0.02)
+            and not bool(definition.get("live_execution"))
+        )
+        prior = None
+        if current_ok:
+            rows = self.store.db.execute(
+                "SELECT id,price_usd,liquidity_usd,observed_at,ingested_at,recorded_at,raw_json "
+                "FROM token_snapshots WHERE token_id=? AND id<? AND observed_at>=? "
+                "ORDER BY id DESC LIMIT 16",
+                (token_id, snapshot_id, iso(observed - timedelta(seconds=180))),
+            ).fetchall()
+            for candidate in rows:
+                try:
+                    previous_pair = json.loads(candidate["raw_json"]).get("pair") or {}
+                    previous_pool = canonical_token_address(
+                        chain, str(previous_pair.get("pairAddress") or ""),
+                    )
+                    previous_observed = parse_time(candidate["observed_at"])
+                    previous_ingested = parse_time(
+                        candidate["ingested_at"] or candidate["recorded_at"]
+                    )
+                    previous_recorded = parse_time(candidate["recorded_at"])
+                    previous_price = float(candidate["price_usd"] or 0)
+                    previous_liquidity = float(candidate["liquidity_usd"] or 0)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if (
+                    previous_pool == pool
+                    and previous_observed < observed
+                    and previous_observed <= previous_ingested <= previous_recorded <= observed
+                    and 0 < (observed - previous_observed).total_seconds() <= 180
+                    and previous_price > 0 and previous_liquidity >= 1000
+                    and price >= previous_price and liquidity >= previous_liquidity * 0.90
+                ):
+                    prior = dict(
+                        snapshot_id=int(candidate["id"]),
+                        observed_at=candidate["observed_at"],
+                        price_usd=previous_price,
+                        liquidity_usd=previous_liquidity,
+                    )
+                    break
+        if not current_ok or prior is None:
+            return False
+
+        assessment = dict(
+            version=SAFETY_PROXY, status="DEX_PROXY_PAPER", allow=True,
+            reasons=[], source_at=iso(observed), exact_pool=pool,
+            current_snapshot_id=snapshot_id, prior=prior,
+            liquidity_usd=liquidity, trades_5m=trades,
+            buy_share=buy_share, volume_5m_usd=volume,
+            external_assessment_status=known["status"],
+            external_unknowns=known["unknowns"],
+            approximation=(
+                "causal exact-pool DEX continuity; not contract safety, wallet breadth, "
+                "sellability, custody, tax or anti-rug proof"
+            ),
+            not_a_safety_guarantee=True,
+        )
+        self.record(item, "BUY_AUTHORIZED_DEX_PROXY_PAPER", assessment)
+        return True
+
     def kick(self):
         if self.pending and (self.task is None or self.task.done()):
             self.task=asyncio.create_task(self.work())

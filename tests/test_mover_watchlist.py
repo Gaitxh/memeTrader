@@ -34,7 +34,7 @@ def test_missing_or_invalid_values_never_admit():
         assert mw.admission(**kwargs) is None
 
 
-def test_a_token_is_considered_only_once():
+def test_a_token_is_admitted_only_once_after_a_qualifying_frame():
     registry = mw.Registry()
     assert registry.consider('solana:A', liquidity_usd=50_000, buys_5m=70, sells_5m=30,
                              now=NOW) == 'mid_pool_buy_share'
@@ -44,13 +44,28 @@ def test_a_token_is_considered_only_once():
     assert registry.active(NOW) == {'solana:A'}
 
 
+def test_unusable_first_frame_does_not_hide_later_qualifying_surface():
+    registry = mw.Registry()
+    assert registry.consider(
+        'solana:MIGRATES', liquidity_usd=None, now=NOW,
+    ) is None
+    assert registry.consider(
+        'solana:MIGRATES', liquidity_usd=5_000, volume_5m_usd=6_000,
+        now=NOW + timedelta(seconds=30),
+    ) == 'small_pool_turnover'
+    assert registry.active(NOW + timedelta(seconds=30)) == {'solana:MIGRATES'}
+    assert registry.snapshot(NOW + timedelta(seconds=30))[
+        'waiting_for_first_qualifying_surface'
+    ] == 0
+
+
 def test_entries_expire_after_the_watch_window():
     registry = mw.Registry(watch_seconds=600)
     registry.consider('solana:A', liquidity_usd=50_000, buys_5m=70, sells_5m=30, now=NOW)
     assert registry.active(NOW + timedelta(seconds=599)) == {'solana:A'}
     assert registry.active(NOW + timedelta(seconds=600)) == set()
     assert registry.counts['expired'] == 1
-    # an expired token is not re-admitted, because it was already considered
+    # an expired token is not re-admitted, because it already had a qualifying frame
     assert registry.consider('solana:A', liquidity_usd=50_000, buys_5m=70, sells_5m=30,
                              now=NOW + timedelta(seconds=601)) is None
 

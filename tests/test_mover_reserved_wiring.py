@@ -73,7 +73,8 @@ def test_first_frame_of_a_flagged_token_is_offered():
     assert Runtime._reserved_mover_quotes(stub, NOW) == {FLAGGED: (token, snapshot)}
 
 
-def test_injected_candidate_is_admitted_by_the_ordinary_loop():
+def test_injected_candidate_is_admitted_by_the_ordinary_loop(monkeypatch):
+    monkeypatch.setattr('memetrader.runtime.utcnow', lambda: NOW)
     token, snapshot = _frame()
     stub = _stub(registry=_flagged_registry(FLAGGED), cache={FLAGGED: (token, snapshot)})
     Runtime._remember_pattern_quotes(stub, {}, reserved_movers=True)
