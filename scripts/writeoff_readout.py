@@ -232,6 +232,61 @@ def main() -> int:
                   f"{('-' if hs is None else f'{float(hs):.2f}'):>10}")
 
     print("\n" + "=" * 84)
+    print("4. THE EVIDENCE THE WRITE-OFF ACTUALLY RESTED ON")
+    print("=" * 84)
+    print("   store.py:34676-34704 shows the write-off does NOT act on the mark history: it performs a")
+    print("   POST-CONFIRMATION re-quote, accepts it only if fresh (<=15 s, line 34680) and still below")
+    print("   the floor (line 34693), and stores it as terminal_dust_pool. Round 79 read only the mark")
+    print("   history, found no collapse there, and wrongly concluded write-offs were unauditable.")
+    ev_rows = list(c.execute(
+        """select trigger_evidence_json from chain_meme_trader_marks
+           where reason like '%dex_pool_liquidity_below_configured_floor%'"""))
+    liq, lags, with_ev, neither = [], [], 0, 0
+    for r in ev_rows:
+        try:
+            ev = json.loads(r["trigger_evidence_json"] or "{}")
+        except (ValueError, TypeError):
+            ev = {}
+        td = ev.get("terminal_dust_pool") if isinstance(ev.get("terminal_dust_pool"), dict) else None
+        pc = ev.get("post_confirmation") if isinstance(ev.get("post_confirmation"), dict) else None
+        src = td or pc
+        if src is None:
+            neither += 1
+            continue
+        with_ev += 1
+        try:
+            if src.get("liquidity_usd") is not None:
+                liq.append(float(src["liquidity_usd"]))
+        except (TypeError, ValueError):
+            pass
+        o, rec = parse(src.get("observed_at")), parse(src.get("recorded_at"))
+        if o and rec:
+            lags.append((rec - o).total_seconds())
+    print(f"\n   write-off marks examined            : {len(ev_rows)}")
+    print(f"   carrying the confirming evidence    : {with_ev} "
+          f"({100.0*with_ev/max(1,len(ev_rows)):.1f}%)")
+    print(f"   carrying none                       : {neither}")
+    if liq:
+        print(f"\n   CONFIRMED liquidity at the write-off (n={len(liq)}):")
+        print("      " + "   ".join(f"p{int(q*100)} {percentile(liq,q):,.2f}"
+                                   for q in (0.10, 0.25, 0.50, 0.75, 0.90)))
+        print(f"      min {min(liq):,.2f}   max {max(liq):,.2f}")
+        below = sum(1 for x in liq if x < args.floor)
+        print(f"      below the {args.floor:.0f} floor: {below}/{len(liq)} "
+              f"= {100.0*below/len(liq):.1f}%")
+        print("      A median far BELOW the floor is the signature of a genuine dust pool, i.e. a")
+        print("      correct write-off; a cluster just under the floor would suggest premature exits.")
+        summary["confirmed_liquidity_p50"] = percentile(liq, 0.5)
+        summary["confirmed_below_floor_share"] = below / len(liq)
+    if lags:
+        print(f"\n   confirmation freshness observed_at -> recorded_at (n={len(lags)}):")
+        print("      " + "   ".join(f"p{int(q*100)} {percentile(lags,q):.3f}s"
+                                   for q in (0.10, 0.50, 0.90)))
+        over = sum(1 for x in lags if x > 15)
+        print(f"      exceeding the 15 s confirmation window: {over} "
+              f"({100.0*over/len(lags):.2f}%)")
+
+    print("\n" + "=" * 84)
     print("WHAT THIS DOES NOT SHOW")
     print("=" * 84)
     print("   That changing any level would have captured the gain. The running high is only known")

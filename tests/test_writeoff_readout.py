@@ -110,6 +110,71 @@ def test_live_writeoff_cohort_exists_and_has_positive_peaks():
 
 @pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
                     reason="live forward database not present")
+def test_live_writeoff_evidence_is_retained_and_confirms_a_dust_pool():
+    """The round-80 correction, asserted so it cannot silently regress.
+
+    Round 79 concluded write-offs were unauditable because the MARK HISTORY shows no collapse. That
+    was reading the wrong table: store.py:34676-34704 performs a POST-CONFIRMATION re-quote and stores
+    it as terminal_dust_pool in chain_meme_trader_marks.trigger_evidence_json.
+
+    This asserts (a) the evidence is present for essentially every write-off, (b) the confirmed
+    liquidity is far BELOW the floor - the signature of a genuine dust pool rather than a premature
+    exit, and (c) the confirming quote was fresh relative to its own observation, i.e. the engine did
+    not act on a stale reading. If any of these fails, the write-off path needs re-examination rather
+    than being treated as closed.
+    """
+    c = sqlite3.connect(f"file:{ROOT / 'data' / 'memetrader_forward.sqlite3'}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    rows = list(c.execute(
+        """select trigger_evidence_json from chain_meme_trader_marks
+           where reason like '%dex_pool_liquidity_below_configured_floor%'"""))
+    if len(rows) < 50:
+        pytest.skip("too few write-off marks to judge")
+    liq, lags, with_ev = [], [], 0
+    for r in rows:
+        try:
+            ev = json.loads(r["trigger_evidence_json"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        td = ev.get("terminal_dust_pool")
+        pc = ev.get("post_confirmation")
+        src = td if isinstance(td, dict) else (pc if isinstance(pc, dict) else None)
+        if src is None:
+            continue
+        with_ev += 1
+        try:
+            if src.get("liquidity_usd") is not None:
+                liq.append(float(src["liquidity_usd"]))
+        except (TypeError, ValueError):
+            pass
+        o, rec = wor.parse(src.get("observed_at")), wor.parse(src.get("recorded_at"))
+        if o and rec:
+            lags.append((rec - o).total_seconds())
+
+    share = with_ev / len(rows)
+    assert share > 0.90, (
+        f"only {100*share:.1f}% of write-off marks carry terminal_dust_pool/post_confirmation; if "
+        f"this has fallen, write-offs really are un-evidenced and round 79's reading becomes right")
+
+    assert liq, "no confirmed liquidity values found in the evidence"
+    below = sum(1 for x in liq if x < wor.DEFAULT_FLOOR) / len(liq)
+    assert below > 0.95, (
+        f"only {100*below:.1f}% of confirmed write-offs are below the floor - the mechanism is "
+        f"supposed to settle only on a confirmed breach")
+    med = wor.percentile(liq, 0.5)
+    assert med is not None and med < 0.5 * wor.DEFAULT_FLOOR, (
+        f"median confirmed liquidity is {med} - if it ever clusters just under the "
+        f"{wor.DEFAULT_FLOOR:.0f} floor, exits are becoming premature rather than dust-driven")
+
+    assert lags, "no confirmation timestamps found"
+    over = sum(1 for x in lags if x > 15.0)
+    assert over / len(lags) < 0.05, (
+        f"{100*over/len(lags):.1f}% of confirmations are older than the 15 s window store.py:34680 "
+        f"enforces - the engine would be acting on stale readings")
+
+
+@pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
+                    reason="live forward database not present")
 def test_live_activation_comparison_uses_per_arm_contracts():
     """The coverage-gap claim requires per-arm activation levels, and requires that the majority of
     the cohort never reaches its OWN arm's level.
