@@ -84,3 +84,20 @@ latency, or database lock failures. New 152 strategy matches must have either a
 position/participant outcome or a named safety evidence row after the grace window.
 No profitability claim is allowed until enough independent, cost-adjusted forward
 cohorts mature.
+
+## Deployment readback
+
+- Commit `e191617` was pushed to
+  `work/2026-09-04-c2c-115000-additive-strategy`.
+- The existing Paper supervisor replaced leaf worker PID 12884 with PID 21692;
+  direct `/health` returned `ok=true` and `runtime_status=running`.
+- In the first two deployed minutes, 182 lifecycle attempts across 68 batches were
+  recorded (about 91 token follow-ups/minute) alongside 43 first-hydration attempts.
+  This is roughly four times the former 2-per-five-second reservation without adding
+  another request lane.
+- The first post-deploy 10-minute audit had 401 admitted arm decisions, 0 matured
+  decisions without auditable outcome, 0 orphan fills, and 0 bad position/fill links.
+  Due follow-ups moved from 3,792 to 3,775 in the short readback; the backlog remains
+  an active degradation flag until a longer comparable window proves recovery.
+- The overview was reopened in the right Codex browser panel and showed a current
+  system heartbeat with the Paper-only cost label.
