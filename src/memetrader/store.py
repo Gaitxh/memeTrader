@@ -32752,7 +32752,17 @@ class Store:
                 "first_missing_at=NULL,failure_kind='',last_attempt_at=excluded.last_attempt_at,"
                 "last_success_at=excluded.last_success_at,inventory_json=json_set(excluded.inventory_json,"
                 "'$.boundary_at',json_extract(chain_meme_trader_pool_marks.inventory_json,'$.boundary_at')) "
+                # A row that has NEVER carried a successful sample accepts its first one regardless of
+                # the timestamp comparison. `observed_at` is NOT NULL, so the `IS NULL` branch below is
+                # unreachable, and `record_chain_meme_trader_pool_mark_failure` writes its ATTEMPT clock
+                # into that column (lines 32814-32815). On a coarse platform clock -- measured here: 8
+                # consecutive `datetime.now(UTC)` calls returned ONE distinct value -- the failure stamp
+                # and the next real observation can be byte-identical, making the strict `>` comparison
+                # false and silently discarding the recovery. `sample_sequence = 0` identifies exactly
+                # those rows (the success path sets it to old+1, the failure and miss paths to 0), so a
+                # row that has held a real datum keeps the strict newest-wins rule unchanged.
                 "WHERE chain_meme_trader_pool_marks.observed_at IS NULL "
+                "OR chain_meme_trader_pool_marks.sample_sequence=0 "
                 "OR excluded.observed_at>chain_meme_trader_pool_marks.observed_at",
                 (
                     mark_token_id, pair_key, mark_chain, mark_address, provider,
