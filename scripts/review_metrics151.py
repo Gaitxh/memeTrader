@@ -5,6 +5,10 @@ import json
 from memetrader.models import canonical_token_address
 
 
+COMPOSITE151_ARM = 'alpha149_confirmed_recovery_decay_v1'
+COMPOSITE151_PARENT = 'alpha149_moonbag_steady_v1'
+
+
 def date(value):
     return datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc)
 
@@ -29,6 +33,85 @@ def visible_mark(c, token, pool, start, end):
                 and start <= observed <= recorded <= end and 0 <= (recorded-observed).total_seconds() <= 15):
             return row
     return None
+
+
+def composite_exit151_diagnostics(c, limit=200):
+    """Return a bounded, persisted-only readout for the additive exit arm.
+
+    A terminal reason says what settled the position, not which earlier evaluator
+    prevented a composite signal.  Only a persisted SELL intent with the exact
+    composite reason establishes that the two-confirmation trigger fired.
+    """
+    limit = min(200, max(1, int(limit)))
+    columns = {row[1] for row in c.execute('PRAGMA table_info(chain_meme_trader_positions)')}
+    required = {'definition_version', 'arm_id', 'shadow_cohort_id', 'token_id',
+                'opened_at', 'closed_at', 'close_reason', 'capital_exit_state_json'}
+    if not required <= columns:
+        return {'status': 'unknown', 'reason': 'positions_schema_unavailable'}
+    # 201 makes the 200-row cap explicit without turning an arm-wide historical
+    # report into an unbounded scan.  This same path is usable on an archive.
+    rows = c.execute('SELECT definition_version,shadow_cohort_id,token_id,opened_at,closed_at,close_reason, '
+        'capital_exit_state_json FROM chain_meme_trader_positions WHERE arm_id=? '
+        'ORDER BY COALESCE(closed_at,opened_at) DESC,definition_version DESC,shadow_cohort_id DESC,token_id DESC LIMIT ?',
+        (COMPOSITE151_ARM, limit + 1)).fetchall()
+    truncated = len(rows) > limit
+    rows = [dict(row) for row in rows[:limit]]
+    reasons = Counter(row['close_reason'] or 'unknown_terminal_reason' for row in rows if row['closed_at'])
+    state_available = sum(row['capital_exit_state_json'] is not None for row in rows)
+    # The persisted state contains a pending single confirmation, not the
+    # evaluate() return evidence (which has first/second).  Do not manufacture
+    # a two-confirmation metric from arbitrary JSON substrings.
+    confirmation_checkpoints = 0
+    for row in rows:
+        try:
+            state = json.loads(row['capital_exit_state_json'] or '{}')
+            composite = state.get('composite151') if isinstance(state, dict) else None
+            confirmation_checkpoints += isinstance(composite, dict) and isinstance(composite.get('confirmation'), dict)
+        except (TypeError, ValueError):
+            pass
+    intent_columns = {row[1] for row in c.execute('PRAGMA table_info(chain_meme_trader_order_intents)')}
+    intent_required = {'definition_version', 'arm_id', 'shadow_cohort_id', 'token_id', 'side', 'reason'}
+    trigger = {'status': 'unknown', 'reason': 'sell_intent_schema_unavailable', 'count': None}
+    if intent_required <= intent_columns:
+        # The CTE has precisely the selected diagnostic identities and ordering;
+        # an excluded 201st row cannot alter a <=200 report result.
+        trigger_rows = c.execute('WITH child AS (SELECT definition_version,shadow_cohort_id,token_id '
+            'FROM chain_meme_trader_positions WHERE arm_id=? '
+            'ORDER BY COALESCE(closed_at,opened_at) DESC,definition_version DESC,shadow_cohort_id DESC,token_id DESC LIMIT ?) '
+            'SELECT COUNT(*) n FROM chain_meme_trader_order_intents i JOIN child c '
+            'ON c.definition_version=i.definition_version AND c.shadow_cohort_id=i.shadow_cohort_id '
+            'AND c.token_id=i.token_id WHERE i.arm_id=? AND i.side=\'SELL\' '
+            'AND i.reason=\'confirmed_market_decay_net_recovery151\'',
+            (COMPOSITE151_ARM, limit, COMPOSITE151_ARM)).fetchone()
+        count = int(trigger_rows['n'] if hasattr(trigger_rows, 'keys') else trigger_rows[0])
+        trigger = {'status': 'observed' if count else 'not_observed', 'count': count,
+                   'evidence': 'persisted_sell_intent_exact_reason'}
+    if not rows:
+        trigger = {'status': 'no_natural_samples', 'count': 0,
+                   'evidence': 'no_child_arm_positions_in_bounded_scope'}
+    by_version = {}
+    for row in rows:
+        group = by_version.setdefault(row['definition_version'], {'positions': 0, 'tokens': set(), 'open_positions': 0})
+        group['positions'] += 1; group['tokens'].add(row['token_id'])
+        group['open_positions'] += row['closed_at'] is None
+    return {
+        'definition': 'Bounded persisted Paper positions for the composite151 child arm. Terminal reasons are outcomes, not causal pre-emption claims.',
+        'sample_scope': f'Latest <={limit} child-arm positions by terminal/open time; archive-compatible; no parent comparison is computed.',
+        'status': 'ok' if rows else 'no_natural_samples', 'arm_id': COMPOSITE151_ARM, 'parent_arm_id': COMPOSITE151_PARENT,
+        'natural_paper_positions': len(rows),
+        'independent_tokens': len({row['token_id'] for row in rows}),
+        'open_positions': sum(row['closed_at'] is None for row in rows),
+        'definition_version_counts': [dict(definition_version=version, positions=group['positions'],
+            independent_tokens=len(group['tokens']), open_positions=group['open_positions'])
+            for version, group in sorted(by_version.items())],
+        'terminal_reasons': dict(reasons),
+        'persisted_two_confirmation_trigger': trigger,
+        'state_checkpoint': {'available_positions': state_available,
+                             'pending_confirmation_positions': confirmation_checkpoints,
+                             'meaning': 'single-confirmation checkpoint only; not an exit-trigger proof'},
+        'parent_comparison': {'status': 'pending', 'reason': 'not computed in this bounded per-arm readout'},
+        'truncated': truncated,
+    }
 
 
 def washout(c, cutoff):
@@ -75,7 +158,8 @@ def washout(c, cutoff):
         'sample_scope': 'Latest <=200 mature exits; arm fan-out is not independent; newer incomplete windows reported separately.',
         'maturing_positions': pending['n'], 'maturing_tokens': pending['tokens'],
         'positions': len(outcomes), 'independent_token_entries': len({(x['token_id'], x['source_entry_fill_id'] or x['shadow_cohort_id']) for x in outcomes}),
-        'counts': {str(m): dict(Counter(x['horizons'][str(m)]['status'] for x in outcomes)) for m in (5,15)}, 'samples': outcomes}
+        'counts': {str(m): dict(Counter(x['horizons'][str(m)]['status'] for x in outcomes)) for m in (5,15)},
+        'composite_exit151': composite_exit151_diagnostics(c), 'samples': outcomes}
 
 
 def cohort_funnel(c, cutoff, minutes):

@@ -2,6 +2,16 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260914-projection-exit161",
+      "recorded_at": "2026-09-13T23:12:55Z",
+      "title": "补齐准入到开仓去向、修复原生RPC错误分类并核验退出机制",
+      "problem": "原池cap拒绝没有逐策略证据；曲线RPC失败回包缺pool_address；新增退出臂运行与差异机制触发混淆。",
+      "change": "同事务追加不可变拒绝回执，重复投影不误记；保留失败身份并返回UNKNOWN_RPC；现有周期报告增加有界投影与组合退出诊断。",
+      "validation": "13新测试和71项原生/投影关联、20项报告关联回归通过；最终原生健康子集7通过；完整报告生成，168cohort只读78ms；PID8104/23:17:42Z加载四个改动模块哈希一致。42组合终局但0差异触发，尚未证明有效。",
+      "scope": "Paper only，无Live/注资/旧策略重写；新拒绝自然回执和间歇缺字段/超时继续验证，不宣称长期盈利。",
+      "report": "docs/PROJECT_CONTEXT/PROJECTION_AND_EXIT_OBSERVABILITY161_20260914.md"
+    },
+    {
       "id": "20260914-held-recovery160",
       "recorded_at": "2026-09-13T22:48:00Z",
       "title": "认证迁池恢复28仓、停止47个耗尽策略并修复后台假存活",

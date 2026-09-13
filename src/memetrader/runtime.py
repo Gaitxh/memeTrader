@@ -6565,8 +6565,12 @@ class Runtime:
             from .native_execution import ensure_time_exit
             ensure_time_exit(self.store, native[0])
             try:
-                await asyncio.wait_for(self._native_held_once(native[0]),timeout=3.0)
-                self.store.heartbeat('native-paper-held',item=True,error='')
+                result = await asyncio.wait_for(self._native_held_once(native[0]),timeout=3.0)
+                # Failed reads are classified results now, not identity errors.
+                # They must not become a successful-sample heartbeat.
+                unknown_rpc = result == 'UNKNOWN_RPC'
+                self.store.heartbeat('native-paper-held', item=not unknown_rpc,
+                    error='UNKNOWN_RPC' if unknown_rpc else '')
             except Exception as exc:
                 self.store.heartbeat('native-paper-held',item=False,error=type(exc).__name__,
                     error_detail=str(exc)[:200])
@@ -7107,6 +7111,8 @@ class Runtime:
                 quoted_amount_raw=quote.get('quoted_amount_raw'),capacity_partial=quote.get('capacity_partial',False),
                 capacity_available_raw=quote.get('capacity_available_raw'),
                 capacity_prior_gross_raw=quote.get('capacity_prior_gross_raw')))
+            if result == 'UNKNOWN_RPC':
+                return result
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""

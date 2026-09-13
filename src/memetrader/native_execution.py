@@ -229,6 +229,11 @@ def apply_curve_quote(store, target, quote, fee, reference, *, now=None):
             or str(quote.get('remaining_amount_raw')) != str(row['amount_raw'])):
             raise ValueError('native_exit_identity_amount')
         if s['surface']=='MIGRATION_PENDING':return 'MIGRATION_PENDING'
+        # A failed read has no chain state/slot. Keep exact identity validation,
+        # but do not mislabel transport failure as an unchanged successful quote.
+        # No marks, position amounts, clocks or cash may advance on this path.
+        if quote.get('status') == 'LOCAL_UNKNOWN_RPC' and slot == 0:
+            return 'UNKNOWN_RPC'
         if slot <= s['last_slot']:return 'NO_NEW_STATE'
         observed=parse_time(quote['requested_at']);recorded=parse_time(quote['completed_at'])
         if not parse_time(s['last_recorded_at']) < observed <= recorded <= now or (now-observed).total_seconds()>30:

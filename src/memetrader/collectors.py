@@ -4226,7 +4226,8 @@ class SolanaHeldAccountCollector:
                 completed_at = utcnow()
                 for surface in batch:
                     results.append({
-                        **dict(surface), "context_slot": 0,
+                        **dict(surface), "pool_address": str(surface["curve_address"]),
+                        "context_slot": 0,
                         "requested_at": iso(requested_at), "completed_at": iso(completed_at),
                         "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
                         "status": "LOCAL_UNKNOWN_RPC", "reason": self._rpc_error_reason(exc),

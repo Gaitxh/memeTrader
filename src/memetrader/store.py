@@ -2716,6 +2716,25 @@ class Store:
                     recorded_at TEXT NOT NULL,
                     UNIQUE(definition_version,shadow_cohort_id,arm_id)
                 );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_gate_refusals (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    entry_decision_id INTEGER NOT NULL,
+                    entry_fill_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    gate TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,shadow_cohort_id,arm_id,gate)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_entry_gate_refusals_cohort_arm_idx
+                    ON chain_meme_trader_entry_gate_refusals(
+                        definition_version,shadow_cohort_id,arm_id,id
+                    );
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_eval_no_update
                 BEFORE UPDATE ON chain_meme_trader_v6_entry_evaluations
                 BEGIN SELECT RAISE(ABORT,'v6 entry evaluations are immutable'); END;
@@ -2764,6 +2783,12 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_entry_participant_outcome_no_delete
                 BEFORE DELETE ON chain_meme_trader_entry_participant_outcomes
                 BEGIN SELECT RAISE(ABORT,'entry participant outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_entry_gate_refusal_no_update
+                BEFORE UPDATE ON chain_meme_trader_entry_gate_refusals
+                BEGIN SELECT RAISE(ABORT,'entry gate refusals are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_entry_gate_refusal_no_delete
+                BEFORE DELETE ON chain_meme_trader_entry_gate_refusals
+                BEGIN SELECT RAISE(ABORT,'entry gate refusals are immutable'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_immediate_reverseability_registrations (
                     observer_version TEXT PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -29295,6 +29320,16 @@ class Store:
         })
         for decision in decisions:
             arm_id = str(decision["arm_id"])
+            # A replay of the same cohort must not re-evaluate an arm that already
+            # owns this exact cohort position: after the first projection the pool
+            # may be at its cap, but that does not turn the prior projection into a
+            # concentration refusal.
+            if self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_positions WHERE "
+                "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                (version, arm_id, int(cohort_id)),
+            ).fetchone() is not None:
+                continue
             net_flow = net_flow_by_arm.get(arm_id, 0.0)
             available_cash = float(definition["starting_cash_usd_each_arm"]) + net_flow
             if (
@@ -29327,14 +29362,24 @@ class Store:
                 new_arms_this_pass=0,
             )
             if not concentration_ok:
-                # `chain_meme_trader_entry_participant_outcomes.outcome` is constrained by a
-                # CHECK to two legacy values, so this refusal deliberately writes no row there
-                # rather than risk an IntegrityError inside the entry transaction. It is
-                # counted and persisted separately, which is enough to observe the gate.
+                # Participant outcomes retain their frozen two-value contract.  Keep a
+                # separate immutable refusal receipt so arm-level admissions cannot be
+                # mistaken for projected positions when this exact-pool cap binds.
+                identity = self._chain_meme_entry_pool_identity(version, cohort_id, token_id)
+                if identity is not None:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_entry_gate_refusals("
+                        "definition_version,shadow_cohort_id,arm_id,entry_decision_id,"
+                        "entry_fill_id,token_id,pair_address,gate,reason,attempted_at,recorded_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            version, int(cohort_id), arm_id, int(decision["id"]),
+                            int(entry_fill["id"]), identity[0], identity[1],
+                            "pool_concentration", concentration_reason, filled_at, iso(),
+                        ),
+                    )
                 self._count_pool_concentration_refusal(
-                    definition_version=version, token_id=token_id,
-                    pair_address=self._chain_meme_entry_pool_identity(
-                        version, cohort_id, token_id),
+                    definition_version=version, token_id=token_id, pair_address=identity,
                 )
                 continue
             self.db.execute(

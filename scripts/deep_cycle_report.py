@@ -84,13 +84,16 @@ def _summary(c,path,minutes,historical=False):
       out['exit_reasons']=rows(c,"SELECT close_reason,status,COUNT(*) positions,COUNT(DISTINCT token_id) tokens,SUM(realized_pnl_usd) net_usd FROM chain_meme_trader_positions WHERE status IN ('closed','written_off') GROUP BY close_reason,status ORDER BY positions DESC LIMIT 100")
     try:
       from scripts.review_metrics151 import washout, cohort_funnel
+      from scripts.projection_review161 import projection_diagnostics
     except ModuleNotFoundError:
       from review_metrics151 import washout, cohort_funnel
+      from projection_review161 import projection_diagnostics
     cutoff=c.execute(f'SELECT {clock}').fetchone()[0]
     if '+' not in cutoff and not cutoff.endswith('Z'): cutoff+='Z'
     out['data_cutoff']=cutoff
     out['washout_proxy']=washout(c,cutoff)
     out['cohort_funnel']=cohort_funnel(c,cutoff,minutes)
+    out['arm_projection161']=projection_diagnostics(c,cutoff,minutes)
     return out
 def summary(path,minutes,historical=False):
     c=connect(path)
@@ -112,7 +115,7 @@ def main():
  stem=f"{a.label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"; (out/(stem+'.json')).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
  f=report['current']; lines=[f"# 深度循环报告 {report['generated_at']}",'',f"窗口：{a.minutes} 分钟；所有大表为最新 200,000 ID 前沿，结果可能截断。",'', '## 匹配 Token 漏斗']
  for x in f.get('matched_token_funnel',[]): lines.append(f"- {x['chain']}: 发现 {x['discovered_tokens']}，入库快照 {x['snapshot_ingested_tokens']}，评估 {x['evaluated_tokens']}；评估延迟 p50/p90/p99={x['latency_seconds']['discovery_to_evaluation']}")
- for title,key in [('同机会入场路径','cohort_funnel'),('真实拒绝原因','genuine_evaluation_rejects'),('请求与持仓时延','runtime_timing_compact'),('队列','passive_queue'),('策略控制','lifecycle_controls'),('错误监督','error_supervision'),('成本后Paper已实现结果','pnl'),('退出原因','exit_reasons')]:
+ for title,key in [('同机会入场路径','cohort_funnel'),('逐策略开仓去向','arm_projection161'),('真实拒绝原因','genuine_evaluation_rejects'),('请求与持仓时延','runtime_timing_compact'),('队列','passive_queue'),('策略控制','lifecycle_controls'),('错误监督','error_supervision'),('成本后Paper已实现结果','pnl'),('退出原因','exit_reasons')]:
   lines += ['', '## '+title, '```json', json.dumps(f.get(key),ensure_ascii=False,indent=2), '```']
  lines += ['', '## 固定窗口退出后观察', json.dumps({k:v for k,v in f['washout_proxy'].items() if k!='samples'},ensure_ascii=False), '', '研究采样器：'+json.dumps((f.get('api_performance') or {}).get('post_exit151'),ensure_ascii=False), '', '## 真实性边界', *['- '+x for x in report['limits']], '- 无法恢复的历史发现与池/机会关联不补造；不按事后涨幅认定当时应该买入。']
  (out/(stem+'.md')).write_text('\n'.join(lines)+'\n',encoding='utf8'); print(json.dumps({'json':str(out/(stem+'.json')),'markdown':str(out/(stem+'.md'))},ensure_ascii=False))
