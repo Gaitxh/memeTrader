@@ -99,6 +99,27 @@ def sweep(series, windows):
     return out
 
 
+def reach(series, window_seconds):
+    """Distinct tokens that ever present a valid window -- the objective that actually matters.
+
+    THE CORRECTION THIS FUNCTION EXISTS FOR. Round 75 optimised qualifying FRAME COUNT and concluded
+    that 60 s beats the gated 30 s by 21%. Round 76 showed that is the wrong objective: a qualifying
+    frame only matters because it unblocks that token AT THAT FRAME, so one good frame per token is
+    what counts. Re-measured on reach, 60 s is WORSE than 30 s (221 tokens vs 230), because
+    `window(rows, seconds)` needs a frame at or before t_end - seconds, so any series whose whole
+    lifetime is shorter than `seconds` can never qualify - and 66.0% of series live under 60 s.
+
+    Reporting frame count without reach is therefore not merely incomplete; it points the wrong way.
+    """
+    out = set()
+    for key, ts in series.items():
+        for i in range(len(ts)):
+            if window(ts[:i + 1], window_seconds)[0]:
+                out.add(key)
+                break
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -150,25 +171,43 @@ def main() -> int:
     print("         limit of this sweep, not a property of the engine.")
 
     res = sweep(series, windows)
+    reaches = {w: reach(series, w) for w in windows}
 
     print("\n" + "=" * 92)
     print("QUALIFYING FRAMES BY WINDOW SIZE")
     print("=" * 92)
     base_ok = res.get(GATED_WINDOW, (0, 0, None))[1]
-    print(f"   {'window':>8} {'attempts':>9} {'qualify':>9} {'rate':>8} {'vs gated':>10}")
-    print("   " + "-" * 52)
+    base_reach = len(reaches.get(GATED_WINDOW, ()))
+    print(f"   {'window':>8} {'attempts':>9} {'qualify':>9} {'rate':>8} {'vs gated':>10} "
+          f"{'TOKENS':>8} {'vs gated':>10}")
+    print("   " + "-" * 74)
     for w in windows:
         attempts, ok, _f = res[w]
         mult = f"{ok/base_ok:.2f}x" if base_ok else "n/a"
+        r = len(reaches[w])
+        rmult = f"{r/base_reach:.2f}x" if base_reach else "n/a"
         star = "  <- gated" if w == GATED_WINDOW else ""
         print(f"   {w:>6}s {attempts:>9} {ok:>9} {100.0*ok/max(1,attempts):>7.2f}% "
-              f"{mult:>10}{star}")
+              f"{mult:>10} {r:>8} {rmult:>10}{star}")
+
+    print("\n   WHICH COLUMN TO OPTIMISE: the TOKENS column, not the qualify column.")
+    print("   store.py:27784 blocks an arm when the CURRENT frame cannot present the window, so ONE")
+    print("   qualifying frame unblocks that token at that frame. Extra qualifying frames landing on")
+    print("   tokens that already qualify buy nothing, and a wider window can LOSE tokens whose whole")
+    print("   lifetime is shorter than it - `window(rows, seconds)` needs a frame at or before")
+    print("   t_end - seconds. Round 75 optimised the qualify column and drew the wrong conclusion.")
+
     if base_ok:
-        best = max(windows, key=lambda w: res[w][1])
-        print(f"\n   best size on this data: {best}s "
-              f"({res[best][1]} frames, {res[best][1]/base_ok:.2f}x the gated {GATED_WINDOW}s)")
-        print("   The curve is NOT monotone: too small and the span cap binds, too large and the")
-        print("   full-lookback and gap rules bind. The optimum sits between them.")
+        best_f = max(windows, key=lambda w: res[w][1])
+        best_r = max(windows, key=lambda w: len(reaches[w]))
+        print(f"\n   best by FRAME COUNT : {best_f}s ({res[best_f][1]} frames, "
+              f"{res[best_f][1]/base_ok:.2f}x the gated {GATED_WINDOW}s)")
+        print(f"   best by TOKEN REACH : {best_r}s ({len(reaches[best_r])} tokens, "
+              f"{len(reaches[best_r])/max(1,base_reach):.2f}x the gated {GATED_WINDOW}s)")
+        if best_f != best_r:
+            print(f"\n   THE TWO OBJECTIVES DISAGREE ({best_f}s vs {best_r}s). That disagreement is")
+            print("   itself the finding: a larger window forms more often on long-lived series while")
+            print("   reaching fewer tokens overall.")
 
     print("\n" + "=" * 92)
     print("WHICH RULE BINDS, BY WINDOW SIZE")

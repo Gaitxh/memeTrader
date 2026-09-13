@@ -130,6 +130,76 @@ def test_default_windows_match_the_engine():
     assert wss.GAP_LIMIT == 30.0
 
 
+def test_reach_counts_distinct_tokens_not_frames():
+    """`reach` must return a SET of tokens, and must be <= the qualifying frame count."""
+    series = {"a": at(0, 40, 50, 60, 70), "b": at(0, 100, 200)}
+    r = wss.reach(series, 30)
+    assert isinstance(r, set), "reach must be a set of token keys"
+    assert r <= set(series), "reach must only contain input tokens"
+    _a, frames_ok, _f = wss.sweep(series, (30,))[30]
+    assert len(r) <= frames_ok, "distinct tokens can never exceed qualifying frames"
+
+
+def test_frame_count_and_reach_can_disagree():
+    """GUARDS THE ROUND-75/76 REVERSAL.
+
+    Round 75 optimised qualifying FRAME COUNT and concluded the gated 30 s sat on the low side of a
+    peak, with 60 s better by 21%. Round 76 showed the objective was wrong: a qualifying frame
+    matters only because it unblocks that token at that frame, so REACH is the metric - and on reach
+    the live 30 s is the best size.
+
+    This fixture pins the mechanical reason the two can diverge. At a REGULAR 30 s cadence the 30 s
+    window qualifies NOTHING, because dex_trajectory.py:54 rejects any consecutive gap `> 30` and a
+    30 s cadence lands exactly on the boundary, while the 60 s window tolerates it and qualifies.
+    So frame count does not merely differ from reach - it can rank the sizes in the opposite order.
+    """
+    regular30 = at(*range(0, 601, 30))       # 21 frames, cadence exactly 30 s
+    f30 = wss.sweep({"r": regular30}, (30,))[30][1]
+    f60 = wss.sweep({"r": regular30}, (60,))[60][1]
+    assert f30 == 0, (
+        f"a regular 30 s cadence must fail the 30 s window entirely (gap 30 is not < 30); "
+        f"measured {f30} qualifying frames")
+    assert f60 > 0, "the 60 s window should tolerate a 30 s cadence"
+    assert f60 > f30, "fixture must show frame count preferring the WIDER window"
+
+    # and a short-lived series shows the same sizes ranked the OTHER way on reach
+    short = at(0, 15, 30, 40)                 # lifetime 40 s
+    assert wss.reach({"s": short}, 30) == {"s"}, "a 40 s series should reach at 30 s"
+    assert wss.reach({"s": short}, 60) == set(), (
+        "a 40 s series cannot form a 60 s window (no frame at or before t_end - 60)")
+
+
+@pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
+                    reason="live forward database not present")
+def test_live_gated_size_is_optimal_for_reach():
+    """The corrected live claim, and the opposite of round 75's.
+
+    On the live epoch the gated 30 s is the BEST size by token reach, even though 60 s beats it on
+    frame count. If this ever inverts, the gate threshold becomes a real lever and the question
+    should be reopened - so the assertion is deliberately in the direction that fails loudly.
+    """
+    import sqlite3
+    from collections import defaultdict as dd
+    c = sqlite3.connect(f"file:{ROOT / 'data' / 'memetrader_forward.sqlite3'}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    series = dd(set)
+    for r in c.execute("select token_id, observed_at from token_snapshots "
+                       "where observed_at is not null"):
+        t = wss.parse(r["observed_at"])
+        if t is not None:
+            series[str(r["token_id"])].add(t)
+    series = {k: sorted(v) for k, v in series.items()}
+    if len(series) < 100:
+        pytest.skip("too few series to judge")
+    reaches = {w: len(wss.reach(series, w)) for w in wss.DEFAULT_WINDOWS}
+    gated = reaches[wss.GATED_WINDOW]
+    best = max(reaches, key=lambda w: reaches[w])
+    assert best == wss.GATED_WINDOW, (
+        f"the gated {wss.GATED_WINDOW}s is no longer the best size by token reach; "
+        f"measured {reaches}. A different size reaching more tokens would make the threshold a "
+        f"genuine lever, so reopen the question rather than ignoring this")
+
+
 @pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
                     reason="live forward database not present")
 def test_live_sweep_finds_a_non_gated_size_at_least_as_good():
