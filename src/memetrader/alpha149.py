@@ -3349,6 +3349,25 @@ EXIT_ARMS.update(_exit_ladder150.EXIT_ARMS)
 ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 EXIT_LADDER150_ARMS = tuple(sorted(_exit_ladder150.EXIT_ARMS))
 
+# `EXIT_KINDS` is the set of kinds `exit_reason` can evaluate, and `exit_reason` is only ever
+# dispatched on a policy whose `trajectory_exit` is truthy (store.py:35953). BOTH newer waves
+# deliberately leave `trajectory_exit` unset - EXIT150 because the staged take-profit ladder is
+# the primary exit and the market-mark hard stop is consulted first, and EXIT_LADDER150 for the
+# same reason - so their EXIT_ARMS values are registry labels, NOT evaluable kinds. Covering every
+# EXIT_ARMS value here would therefore claim support for kinds that `exit_reason` does not
+# implement. The invariant that actually holds, and that the arms' own registration comments
+# assert, is the other direction: EVERY kind any arm sets as `trajectory_exit` is evaluable.
+# Round 120-69 recorded this because the older test asserted the false direction and had been
+# failing since the ladder wave landed; the honest fix is here plus a corrected assertion, not a
+# blanket recompute that would silently widen EXIT_KINDS.
+_TRAJECTORY_EXIT_KINDS = frozenset(
+    policy["trajectory_exit"] for policy in OVERRIDES.values()
+    if isinstance(policy, dict) and policy.get("trajectory_exit")
+)
+assert _TRAJECTORY_EXIT_KINDS <= EXIT_KINDS, (
+    "an arm declares a trajectory_exit kind that exit_reason cannot evaluate: "
+    f"{sorted(_TRAJECTORY_EXIT_KINDS - EXIT_KINDS)}")
+
 
 # ---- wave 43: ACTIVITY-FLOOR150 entry activity floors, as NEW entry arms ----
 # Unlike EXIT150 these ARE entry arms and therefore DO go into SPECS: they must emit their own

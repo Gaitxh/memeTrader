@@ -167,14 +167,42 @@ def test_new_arms_are_shaped_and_isolated_by_engine_field():
     assert step["absolute_max_hold_seconds"] == 300
     assert policies["alpha149_friction_multiple_escape_v1"]["hard_stop_return"] == -.12
     assert policies["alpha149_elasticity_anomaly_fast_v1"]["notional_usd"] == 1.0
+    # Every exit-carrier arm must declare exactly HOW it exits. The original carriers do it
+    # through a trajectory-exit kind; the EXIT150 arms do it through a staged take-profit
+    # ladder and deliberately leave `trajectory_exit` unset, because the market-mark hard stop
+    # is evaluated before the trajectory-exit branch and would preempt it. Asserting "exactly
+    # one mechanism" is the real invariant and is stronger than the original blanket check.
     for arm in alpha149.EXIT_ARMS:
-        assert policies[arm]["trajectory_exit"] == alpha149.EXIT_ARMS[arm]
+        policy = policies[arm]
+        has_trajectory_exit = policy["trajectory_exit"] == alpha149.EXIT_ARMS[arm]
+        has_ladder = bool(policy.get("take_profit"))
+        assert has_trajectory_exit or has_ladder, arm
+        assert not (has_trajectory_exit and has_ladder), (
+            f"{arm} declares two exit mechanisms; the comparison would not be interpretable")
 
 
 def test_every_new_arm_has_a_mechanism_or_exit_kind():
     assert set(alpha149.KINDS) == {kind for kind, _n, _h in alpha149.SPECS.values()}
-    assert alpha149.EXIT_KINDS == set(alpha149.EXIT_ARMS.values())
+    # `EXIT_KINDS` is what `exit_reason` can EVALUATE, and `exit_reason` is only dispatched on a
+    # policy whose `trajectory_exit` is truthy (store.py:35953). The EXIT150 and EXIT_LADDER150
+    # arms deliberately leave `trajectory_exit` unset - their staged take-profit ladder is the
+    # primary exit, and the market-mark hard stop is consulted first - so their EXIT_ARMS values
+    # are registry labels, not evaluable kinds. Asserting `EXIT_KINDS == set(EXIT_ARMS.values())`
+    # therefore claimed support for kinds that do not exist and had been failing since the ladder
+    # wave landed (round 120-69). The real invariant is that every kind an arm ACTUALLY declares is
+    # evaluable; this is also asserted at import time in alpha149.
+    declared = {p["trajectory_exit"] for p in alpha149.OVERRIDES.values()
+                if isinstance(p, dict) and p.get("trajectory_exit")}
+    assert declared <= alpha149.EXIT_KINDS
+    # and every evaluable kind belongs to a registered carrier
+    assert alpha149.EXIT_KINDS == set(alpha149.EXIT_ARMS.values()) - {
+        arm for arm, kind in alpha149.EXIT_ARMS.items() if kind == arm}
     assert len(alpha149.ALL_ARMS) == len(set(alpha149.ALL_ARMS))
+    # the two ladder-only waves are carriers with no evaluable kind, and must stay that way
+    for arm in alpha149.EXIT_LADDER150_ARMS:
+        assert alpha149.OVERRIDES[arm]["trajectory_exit"] is None, arm
+    for arm in alpha149.EXIT150_ARMS:
+        assert alpha149.OVERRIDES[arm]["trajectory_exit"] is None, arm
 
 
 def test_store_routes_trajectory_engine_by_policy_field(tmp_path):
@@ -1364,9 +1392,15 @@ def test_wave23_arms_are_reachable_through_the_live_engine_path():
                       ("alpha149_moonbag_merged_v1", "merged_multi_setup"),
                       ("alpha149_flow_fade_steady_v1", "survivable_steady"),
                       ("alpha149_time_stop20_steady_v1", "survivable_steady"),
-                      ("alpha149_trend_break_steady_v1", "survivable_steady")):
+                      ("alpha149_trend_break_steady_v1", "survivable_steady"),
+                      ("alpha149_confirmed_stop_steady_v2", "survivable_steady")):
         assert arm in policies, arm
         assert alpha149.SPECS[arm][0] == kind, arm
+    confirmed = policies["alpha149_confirmed_stop_steady_v2"]
+    assert confirmed["hard_stop_grace_seconds"] == 60
+    assert confirmed["hard_stop_confirm_marks"] == 2
+    assert confirmed["hard_stop_return"] == -.20
+    assert confirmed["excess_return_vs_arm"] == "alpha149_survivable_steady_v1"
     # Drive real frames through the engine: a flat, deep, mature pool must emit
     # all six arms without the new carriers disturbing the frozen wave-15/16 ones.
     clock = [datetime(2026, 9, 11, tzinfo=UTC)]
@@ -1387,7 +1421,7 @@ def test_wave23_arms_are_reachable_through_the_live_engine_path():
     signals = engine.signals_for("solana:T", "P", clock[0])
     for arm in ("alpha149_moonbag_steady_v1", "alpha149_moonbag_control_steady_v1",
                 "alpha149_flow_fade_steady_v1", "alpha149_time_stop20_steady_v1",
-                "alpha149_trend_break_steady_v1"):
+                "alpha149_trend_break_steady_v1", "alpha149_confirmed_stop_steady_v2"):
         assert arm in signals, arm
         assert signals[arm]["decision_evidence"]["mode"] == "survivable_steady"
     # The wave-15/16 carriers still ride their own frozen entry untouched.
