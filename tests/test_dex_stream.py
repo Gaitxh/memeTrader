@@ -192,6 +192,28 @@ def test_terminal_dex_429_cools_other_endpoint_even_without_retry(retry):
     asyncio.run(scenario())
 
 
+def test_terminal_public_gateway_429_cools_next_document_request():
+    async def scenario():
+        calls = []
+
+        async def handler(request):
+            calls.append(time.monotonic())
+            return httpx.Response(
+                429 if len(calls) <= 2 else 200,
+                headers={"Retry-After": "0.02"}, json={},
+            )
+
+        client = HttpClient(min_host_interval=0, transport=httpx.MockTransport(handler))
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get("https://gateway.example/ipfs/a", retry_429=True)
+        deadline = client._host_backoff_until["gateway.example"]
+        await client.get("https://gateway.example/ipfs/b", retry_429=False)
+        assert calls[-1] >= deadline - 0.002
+        assert len(calls) == 3
+        await client.close()
+    asyncio.run(scenario())
+
+
 def test_real_dex_starts_prioritize_held_then_resume_lows_before_held_response():
     async def scenario():
         starts = []

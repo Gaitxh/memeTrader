@@ -168,6 +168,97 @@ def test_held_cooldown_releases_priority_without_fake_market_result(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("result_kind", ["timeout", "deferred", "empty", "success"])
+def test_held_round_health_requires_a_real_response(tmp_path, result_kind):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        runtime.chain_meme_trader_only = True
+        source = "chain-meme-market-marks"
+        old = "2026-01-01T00:00:00Z"
+        runtime.store.heartbeat(source, error="TimeoutError")
+        runtime.store.db.execute(
+            "UPDATE source_health SET last_ok_at=?,last_item_at=? WHERE source=?",
+            (old, old, source),
+        )
+        runtime.store.db.commit()
+        token = TokenCandidate("solana", "A" * 32, "Held", "HELD")
+        target = target_for(token, "entry-pool")
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: None
+
+        async def quote(*args, **kwargs):
+            if result_kind == "timeout":
+                raise TimeoutError("fixture")
+            if result_kind == "deferred":
+                return None
+            if result_kind == "empty":
+                return {}
+            pair = pair_payload(token, "entry-pool", provider="dexscreener")
+            return {token.token_id: (token, DexScreenerClient._snapshot(pair))}
+
+        runtime._dex_batch_quote = quote
+        try:
+            await runtime.chain_meme_market_marks_once()
+            health = runtime.store.db.execute(
+                "SELECT * FROM source_health WHERE source=?", (source,),
+            ).fetchone()
+            case = runtime.store.db.execute(
+                "SELECT status FROM system_error_cases WHERE component=?", (source,),
+            ).fetchone()
+            if result_kind in {"timeout", "deferred"}:
+                assert health["last_ok_at"] == old
+                assert health["last_item_at"] == old
+                assert health["last_error"] == "TimeoutError"
+                assert case["status"] == "new"
+            else:
+                assert health["last_ok_at"] != old
+                assert (health["last_item_at"] != old) == (result_kind == "success")
+                assert health["last_error"] == ""
+        finally:
+            await runtime.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure_finishes_last", [False, True])
+def test_held_round_partial_success_cannot_erase_other_chain_failure(
+    tmp_path, failure_finishes_last,
+):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        runtime.chain_meme_trader_only = True
+        source = "chain-meme-market-marks"
+        good = TokenCandidate("solana", "B" * 32, "Good", "GOOD")
+        bad = TokenCandidate("bsc", "0x" + "a" * 40, "Failed", "BAD")
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [
+            target_for(good, "good-pool"), target_for(bad, "0x" + "b" * 40),
+        ]
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: None
+
+        async def quote(chain, *args, **kwargs):
+            if (chain == "bsc") == failure_finishes_last:
+                await asyncio.sleep(0.01)
+            if chain == "bsc":
+                raise TimeoutError("fixture")
+            pair = pair_payload(good, "good-pool", provider="dexscreener")
+            return {good.token_id: (good, DexScreenerClient._snapshot(pair))}
+
+        runtime._dex_batch_quote = quote
+        try:
+            await runtime.chain_meme_market_marks_once()
+            health = runtime.store.db.execute(
+                "SELECT * FROM source_health WHERE source=?", (source,),
+            ).fetchone()
+            assert health["last_ok_at"] is None
+            assert health["last_item_at"] is not None
+            assert health["last_error"] == "TimeoutError"
+            assert runtime.store.db.execute(
+                "SELECT status FROM system_error_cases WHERE component=?", (source,),
+            ).fetchone()["status"] == "new"
+        finally:
+            await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path, monkeypatch):
     async def scenario():
         runtime = make_runtime(tmp_path)
@@ -648,10 +739,12 @@ def test_complement_skips_blocked_dex_but_uses_cg_and_discards_after_recovery(
 def test_fresh_dex_quote_does_not_sleep_and_retry_inside_held_lane():
     async def scenario():
         calls = 0
+        request_timeouts = []
 
         def handler(request):
             nonlocal calls
             calls += 1
+            request_timeouts.append(request.extensions.get("timeout"))
             return httpx.Response(
                 429, headers={"Retry-After": "15"}, request=request,
             )
@@ -665,6 +758,9 @@ def test_fresh_dex_quote_does_not_sleep_and_retry_inside_held_lane():
                     "solana", ["S" * 32],
                 )
             assert calls == 1
+            assert request_timeouts == [{
+                "connect": 3.0, "read": 3.0, "write": 3.0, "pool": 3.0,
+            }]
         finally:
             await http.close()
 

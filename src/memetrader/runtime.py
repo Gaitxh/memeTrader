@@ -7504,10 +7504,13 @@ class Runtime:
             for chain, chain_targets in targets_by_chain.items()
             for start in range(0, len(chain_targets), 30)
         ]
+        batch_errors: list[str] = []
+        received_batches = 0
 
         async def refresh_batch(
             chain: str, chunk: list[dict[str, Any]],
         ) -> int:
+            nonlocal received_batches
             batch_started = asyncio.get_running_loop().time()
             timing = getattr(self, "runtime_timing", None)
             fetch_metric = "held_fetch" if high_priority else "observer_fetch_with_wait"
@@ -7521,6 +7524,7 @@ class Runtime:
             except DexLowPriorityCapacityDeferred:
                 return 0  # No observation, absence or provider failure occurred.
             except Exception as exc:
+                batch_errors.append(type(exc).__name__)
                 if timing is not None:
                     timing.observe(fetch_metric, asyncio.get_running_loop().time()-batch_started, failures=1)
                     if high_priority:
@@ -7564,6 +7568,7 @@ class Runtime:
                                 evaluate_versions or ([evaluate_version] if evaluate_version else []))
                 return 0
             received_at = utcnow()
+            received_batches += 1
             apply_started = asyncio.get_running_loop().time()
             if timing is not None:
                 timing.observe(fetch_metric, apply_started-batch_started, items=len(chunk))
@@ -7706,9 +7711,6 @@ class Runtime:
                     definition_version=version,
                     token_ids=[str(item["token_id"]) for item in chunk],
                 )
-            self.store.heartbeat(
-                heartbeat_name, item=refreshed_count > 0,
-            )
             if timing is not None:
                 timing.observe("held_apply_exit" if high_priority else "observer_apply_exit",
                     asyncio.get_running_loop().time()-apply_started, items=refreshed_count)
@@ -7718,10 +7720,22 @@ class Runtime:
                 )
             return refreshed_count
 
-        return sum(await asyncio.gather(*(
+        refreshed = sum(await asyncio.gather(*(
             refresh_batch(chain, chunk)
             for chain, chunk in batches
         )))
+        # Publish health once for the whole round. A successful peer batch must
+        # not erase another chain's error, and local cooldown/capacity deferral
+        # is not evidence that a failed provider recovered. Keep last_item_at
+        # advancing for real partial results without claiming an all-ok round.
+        if batch_errors:
+            self.store.heartbeat(
+                heartbeat_name, item=refreshed > 0,
+                error=",".join(sorted(set(batch_errors))),
+            )
+        elif received_batches or not batches:
+            self.store.heartbeat(heartbeat_name, item=refreshed > 0)
+        return refreshed
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh current-version held tokens on the high-priority DEX lane."""
@@ -7747,7 +7761,7 @@ class Runtime:
         if hasattr(self, "runtime_timing"):
             self.runtime_timing.observe_market_targets(target_counts, observed_at=utcnow())
         self._pattern_protection_ready = True
-        refreshed = await self._refresh_chain_meme_market_marks(
+        await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-market-marks",
             high_priority=True,
             evaluate_versions=[active_version, *getattr(self, "_chain_carry_versions", [])],
@@ -7757,7 +7771,6 @@ class Runtime:
             self.store.evaluate_chain_meme_trader_market_marks(
                 definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
             )
-        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
 
     async def flat_compression_breakout_shadow_once(self) -> None:
         """Refresh one non-held mature-token batch after the held-token lane."""
@@ -7881,6 +7894,40 @@ class Runtime:
         protected.update(item['token_id'] for item in getattr(getattr(store, '_preentry_safety', None), 'pending', {}).values())
         protected.update(key[0] for key in getattr(self, '_cohort_pending', {}))
         protected.update(key for key, until in getattr(store, '_pattern_ready_until', {}).items() if until > current)
+        # Acquisition-only pool retirement. Keep every receipt above in the
+        # cohort feed; never hide evidence from execution/accounting. Holdings
+        # and real pending decisions retain their independently owned lanes.
+        resources = None
+        resource_enabled = ((getattr(self, 'config', {}) or {}).get('sources', {})
+                            .get('multichain_meme_data', {}).get('pool_resource_retirement_enabled', True))
+        if resource_enabled:
+            from .followup_resources import PoolFollowupResources
+            resources = getattr(self, '_pool_followup_resources', None)
+            if resources is None:
+                saved = store.get_kv('pool-followup-resources:v1', {}) if store and hasattr(store, 'get_kv') else {}
+                resources = self._pool_followup_resources = PoolFollowupResources(saved)
+            for token, snapshot in quoted.values():
+                reject = getattr(self, '_held_pool_quote_rejections', None)
+                if reject is None or not reject(token.token_id, token, snapshot, current):
+                    resources.observe(token, snapshot, current, floor=getattr(
+                        self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+            # Release mover protection without poisoning its token-wide seen
+            # set: a later healthy/new pool can qualify through normal feeds.
+            for token_id, item in getattr(self, '_pattern_watch', {}).items():
+                if token_id not in protected and resources.blocked(token_id, item['pair_address']):
+                    mover = getattr(self, '_mover_watchlist', None)
+                    if mover is not None:
+                        mover.entries.pop(token_id, None)
+                        mover.seen.discard(token_id)
+                    getattr(self, '_mover_first_quote', {}).pop(token_id, None)
+            quoted = {key: (token, snapshot) for key, (token, snapshot) in quoted.items()
+                      if token.token_id in protected or not resources.blocked(token.token_id,
+                          (snapshot.raw or {}).get('pair', snapshot.raw or {}).get('pairAddress', ''))}
+            shared = getattr(self, '_shared_batch148', None)
+            if shared is not None:
+                for token_id, item in [*shared.active.items(), *shared.waiting.items()]:
+                    if token_id not in protected and resources.blocked(token_id, item['pair_address']):
+                        shared._finish(token_id, 'CONFIRMED_POOL_RESOURCE_RETIREMENT', current)
         # MOVER WATCH-LIST (measured 2026-09-12): a protected lease is not released or replaced,
         # so a flagged token keeps accumulating frames for its 15-minute window instead of being
         # rotated out after one observation. The observer already delivers 20-27s spacing; what it
@@ -7925,6 +7972,11 @@ class Runtime:
         old_watch=getattr(self,'_pattern_watch',{})
         watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
+            if resources is not None and key not in protected and resources.blocked(key, item['pair_address']):
+                resources.counts['watch_slots_released'] += 1
+                resources.dirty = True
+                self._leases145_dirty = True
+                continue
             if item.get('min_observe_until',current)>current:protected.add(key)
             if current >= item["expires_at"] and key not in held:
                 if key in protected:
@@ -8459,7 +8511,8 @@ class Runtime:
                 if watchlist is None:
                     from .mover_watchlist import Registry as _MoverRegistry
                     watchlist = self._mover_watchlist = _MoverRegistry()
-                _mover_rule = watchlist.consider(token.token_id, liquidity_usd=snapshot.liquidity_usd,
+                resource_guard = getattr(self, '_pool_followup_resources', None)
+                _mover_rule = None if resource_guard and resource_guard.blocked(token.token_id, address) else watchlist.consider(token.token_id, liquidity_usd=snapshot.liquidity_usd,
                     buys_5m=snapshot.buys_5m, sells_5m=snapshot.sells_5m,
                     volume_5m_usd=snapshot.volume_5m_usd, now=received)
                 if _mover_rule is not None:
@@ -8843,6 +8896,10 @@ class Runtime:
             manager.prune(utcnow(),set(watch)|set(getattr(self,'_market_priority_tokens',())))
             coverage['shared_batch148']=manager.snapshot(utcnow())
         self.store.set_kv('coverage145:status',coverage)
+        resources = getattr(self, '_pool_followup_resources', None)
+        if resources is not None and resources.dirty:
+            self.store.set_kv('pool-followup-resources:v1', resources.state())
+            resources.dirty = False
         if getattr(self,'_leases145_dirty',False):
             checkpoint=dump_state(watch,utcnow());checkpoint['mature_window_counts']=counts
             self.store.set_kv('chain-meme-pattern-watch:leases145',checkpoint);self._leases145_dirty=False
@@ -8877,7 +8934,7 @@ class Runtime:
             )
             if str(item["token_id"]) not in active_token_ids
         ]
-        refreshed = await self._refresh_chain_meme_market_marks(
+        await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-carried-market-marks",
             evaluate_versions=carry_versions,
         )
@@ -8888,9 +8945,6 @@ class Runtime:
                 self.store.record_chain_meme_trader_account_snapshots(
                     definition_version=version,
                 )
-        self.store.heartbeat(
-            "chain-meme-carried-market-marks", item=refreshed > 0,
-        )
 
     async def chain_meme_trader_postbuy_research_once(self) -> None:
         """Run one observer-only semantic investigation shared by all v5 strategy arms."""
@@ -9799,9 +9853,15 @@ class Runtime:
             except Exception as exc:
                 failed = 1
                 component = name.replace("_", "-")
-                self.store.heartbeat(
-                    component, error=type(exc).__name__, error_detail=str(exc),
-                )
+                try:
+                    self.store.heartbeat(
+                        component, error=type(exc).__name__, error_detail=str(exc),
+                    )
+                except Exception as diagnostic_error:
+                    # The primary failure can be SQLite busy/locked. Reporting
+                    # it through the same unavailable writer must not kill the
+                    # periodic task and leave an apparently running process.
+                    self._record_periodic_traceback(name + "_health_write", diagnostic_error)
                 self.notifier.send(
                     "runtime_error",
                     component,
@@ -9841,7 +9901,10 @@ class Runtime:
                 post151 = getattr(self, '_post_exit151', None)
                 if post151 is not None:
                     timing_snapshot['post_exit151'] = post151.snapshot()
-                self.store.record_runtime_timing(timing_snapshot)
+                try:
+                    self.store.record_runtime_timing(timing_snapshot)
+                except Exception as diagnostic_error:
+                    self._record_periodic_traceback(name + "_timing_write", diagnostic_error)
                 self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
             if wakeup is not None:
@@ -9862,6 +9925,26 @@ class Runtime:
             except TimeoutError:
                 pass
 
+    async def _wait_for_core_tasks(self, tasks: list[asyncio.Task]) -> None:
+        """A terminated core loop is fatal, so the existing supervisor restarts.
+
+        Optional finite research jobs are deliberately not supervised as loops.
+        No synthetic heartbeat or trading action is used to mask a dead worker.
+        """
+        critical = {"chain_meme_trader", "chain_meme_market_marks", "chain_meme_token_details"}
+        watched = {task for task in tasks if task.get_name() in critical}
+        stop_task = asyncio.create_task(self._stop.wait(), name="core_stop_wait")
+        try:
+            done, _ = await asyncio.wait(watched | {stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            if self._stop.is_set():
+                return
+            stopped = next(task for task in done if task is not stop_task)
+            cause = None if stopped.cancelled() else stopped.exception()
+            raise RuntimeError(f"critical runtime task stopped: {stopped.get_name()}") from cause
+        finally:
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+
     async def run_forever(self) -> None:
         if self.chain_meme_trader_only:
             version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -9871,7 +9954,8 @@ class Runtime:
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
                    'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
-                   'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py')
+                   'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
+                   'collectors.py','followup_resources.py','held_flap_recovery.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},
@@ -9892,7 +9976,11 @@ class Runtime:
         if self.chain_meme_trader_only:
             from .forward_review151 import run as forward_review151_run
             from .post_exit151 import run as post_exit151_run
+            from .held_flap_recovery import recover_one as recover_held_flap
             tasks = [
+                *([asyncio.create_task(self._periodic('held_flap_recovery', 60,
+                    lambda: recover_held_flap(self), initial_delay_seconds=20), name='held_flap_recovery')]
+                  if self.config.get('held_flap_recovery', {}).get('enabled', True) else []),
                 *([asyncio.create_task(post_exit151_run(self), name='post_exit151')]
                   if self.config.get('optimization151', {}).get('post_exit_enabled', True) else []),
                 *([asyncio.create_task(forward_review151_run(self), name='forward_review151')]
@@ -10039,7 +10127,7 @@ class Runtime:
                 ),
             ]
             try:
-                await self._stop.wait()
+                await self._wait_for_core_tasks(tasks)
             finally:
                 self._stop.set()
                 for task in tasks:

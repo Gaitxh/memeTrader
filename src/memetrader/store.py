@@ -27353,17 +27353,36 @@ class Store:
         current = parse_time(now or utcnow())
         with self._lock:
             rows = self.db.execute(
-                "SELECT o.source_cohort_id,o.target_at,o.status,o.outcome_observed_at AS observed_at,"
-                "o.evaluated_at AS recorded_at,o.outcome_price_usd AS h15price,o.outcome_liquidity_usd AS h15liq,"
+                "WITH observed AS ("
+                "SELECT o.id AS outcome_id,o.source_cohort_id,o.target_at,o.status,"
+                "o.outcome_observed_at AS observed_at,o.evaluated_at AS recorded_at,"
+                "o.outcome_price_usd AS h15price,o.outcome_liquidity_usd AS h15liq,"
                 "c.token_id,c.pair_address,h.outcome_price_usd AS h0price,"
                 "s.observed_at AS baseline_at,json_extract(s.raw_json,'$.pair.pairCreatedAt') AS created_ms "
                 "FROM chain_meme_universe_outcomes o JOIN chain_meme_trader_v6_cohorts c ON c.id=o.source_cohort_id "
                 "JOIN chain_meme_universe_outcomes h ON h.observer_version=o.observer_version "
                 "AND h.source_cohort_id=o.source_cohort_id AND h.horizon_minutes=0 "
                 "JOIN token_snapshots s ON s.id=h.outcome_snapshot_id "
-                "WHERE o.observer_version=? AND o.status IN ('OBSERVED','UNKNOWN') AND o.target_at>=? "
-                "AND o.target_at<=? AND o.horizon_minutes=15 ORDER BY o.target_at DESC,o.id DESC LIMIT 1000",
-                (observer_version, iso(current - timedelta(hours=2)), iso(current))).fetchall()
+                "WHERE o.observer_version=? AND o.status='OBSERVED' AND o.target_at>=? "
+                "AND o.target_at<=? AND o.horizon_minutes=15 ORDER BY o.target_at DESC,o.id DESC LIMIT 1000),"
+                "unknown AS ("
+                "SELECT o.id AS outcome_id,o.source_cohort_id,o.target_at,o.status,"
+                "o.outcome_observed_at AS observed_at,o.evaluated_at AS recorded_at,"
+                "o.outcome_price_usd AS h15price,o.outcome_liquidity_usd AS h15liq,"
+                "c.token_id,c.pair_address,h.outcome_price_usd AS h0price,"
+                "s.observed_at AS baseline_at,json_extract(s.raw_json,'$.pair.pairCreatedAt') AS created_ms "
+                "FROM chain_meme_universe_outcomes o JOIN chain_meme_trader_v6_cohorts c ON c.id=o.source_cohort_id "
+                "JOIN chain_meme_universe_outcomes h ON h.observer_version=o.observer_version "
+                "AND h.source_cohort_id=o.source_cohort_id AND h.horizon_minutes=0 "
+                "JOIN token_snapshots s ON s.id=h.outcome_snapshot_id "
+                "WHERE o.observer_version=? AND o.status='UNKNOWN' AND o.target_at>=? "
+                "AND o.target_at<=? AND o.horizon_minutes=15 ORDER BY o.target_at DESC,o.id DESC LIMIT 1000) "
+                "SELECT source_cohort_id,target_at,status,observed_at,recorded_at,h15price,h15liq,"
+                "token_id,pair_address,h0price,baseline_at,created_ms FROM ("
+                "SELECT * FROM observed UNION ALL SELECT * FROM unknown) "
+                "ORDER BY target_at DESC,outcome_id DESC LIMIT 1000",
+                (observer_version, iso(current - timedelta(hours=2)), iso(current),
+                 observer_version, iso(current - timedelta(hours=2)), iso(current))).fetchall()
             supplied = []
             for row in rows:
                 item = dict(row)

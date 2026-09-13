@@ -8,6 +8,7 @@ import json
 import math
 import re
 import socket
+import ssl
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -22,6 +23,7 @@ from typing import Any, AsyncIterator, Callable, Iterable, Mapping
 
 import httpx
 import websockets
+import certifi
 
 from .models import (
     Observation, TokenCandidate, TokenSnapshot, canonical_token_address, iso,
@@ -1239,6 +1241,12 @@ class HttpClient:
     MAX_CACHE_ENTRIES = 512
     DEX_MAX_INFLIGHT = 8
     DEX_MAX_LOW_PRIORITY_INFLIGHT = 5
+    # A cancelled high-priority request retires its shared httpx generation so
+    # a poisoned connection cannot hold later marks hostage.  Closing a client
+    # can itself wait on transport cleanup, however, and must not extend the
+    # caller's quote deadline.  Keep only one bounded generation set in that
+    # asynchronous cleanup state.
+    MAX_RETIRED_OR_CLOSING_CLIENTS = DEX_MAX_INFLIGHT
 
     def __init__(
         self,
@@ -1273,6 +1281,16 @@ class HttpClient:
         else:
             normalized_proxy = ""
         self.proxy_url = normalized_proxy
+        # httpx creates a certifi-backed SSLContext synchronously for each
+        # AsyncClient when verify=True.  Replacement clients are created from
+        # cancellation/error paths on the event loop; keep the equivalent
+        # strict context per HttpClient so a burst of rotations cannot repeat
+        # that CA-load work.  Egress remains explicit (trust_env=False) and
+        # this does not alter CA roots, hostname checking, or verification.
+        self._verification_context: ssl.SSLContext | None = (
+            ssl.create_default_context(cafile=certifi.where())
+            if transport is None and client_factory is None else None
+        )
         self._client_options: dict[str, Any] = {
             "timeout": httpx.Timeout(timeout),
             "follow_redirects": True,
@@ -1281,6 +1299,8 @@ class HttpClient:
             "trust_env": False,
             "proxy": (normalized_proxy or None) if transport is None else None,
         }
+        if self._verification_context is not None:
+            self._client_options["verify"] = self._verification_context
         if client_limits is not None:
             self._client_options["limits"] = client_limits
         self._client_recovery_enabled = transport is None or client_factory is not None
@@ -1291,6 +1311,9 @@ class HttpClient:
         self._closing_clients: set[asyncio.Task[None]] = set()
         self._client_generation = 1
         self._client_generation_retirements = 0
+        self._client_rotation_suppressed = 0
+        self._client_close_errors = 0
+        self._client_close_cancellations = 0
         self._client_connect_errors = 0
         self._client_pool_timeouts = 0
         self._client_retire_reasons = {"connect": 0, "pool": 0, "cancel": 0}
@@ -1353,6 +1376,10 @@ class HttpClient:
             "client_generation": self._client_generation,
             "retired_client_generations": len(self._retired_clients),
             "client_generation_retirements": self._client_generation_retirements,
+            "client_rotation_suppressed": self._client_rotation_suppressed,
+            "client_close_errors": self._client_close_errors,
+            "client_close_cancellations": self._client_close_cancellations,
+            "max_retired_or_closing_clients": self.MAX_RETIRED_OR_CLOSING_CLIENTS,
             "connect_errors": self._client_connect_errors,
             "pool_timeouts": self._client_pool_timeouts,
             "client_recovery_enabled": self._client_recovery_enabled,
@@ -1418,6 +1445,15 @@ class HttpClient:
             return
         async with self._client_lock:
             if client is self.client:
+                # Do not create unbounded abandoned generations while an
+                # upstream is slow to close sockets.  The current client is
+                # always retained in _client_active, never in either capped
+                # cleanup set, so suppression safely reuses it for the next
+                # request while preserving the original transport error.
+                if (len(self._retired_clients) + len(self._closing_clients)
+                        >= self.MAX_RETIRED_OR_CLOSING_CLIENTS):
+                    self._client_rotation_suppressed += 1
+                    return
                 self.client = self._new_client()
                 self._client_active[self.client] = 0
                 self._client_generation += 1
@@ -1436,8 +1472,20 @@ class HttpClient:
         if close_client:
             task = asyncio.create_task(client.aclose())
             self._closing_clients.add(task)
-            task.add_done_callback(self._closing_clients.discard)
-            await asyncio.shield(task)
+            # A request deadline must end after cancellation propagation, not
+            # after an arbitrary transport's slow close.  Retrieve task
+            # exceptions here so a failed background close never becomes an
+            # unhandled-task warning; close() still drains tracked tasks.
+            def _closed(done: asyncio.Task[None]) -> None:
+                self._closing_clients.discard(done)
+                if done.cancelled():
+                    self._client_close_cancellations += 1
+                    return
+                try:
+                    done.result()
+                except Exception:
+                    self._client_close_errors += 1
+            task.add_done_callback(_closed)
 
     async def _reserve_host_request_start(
         self, host: str, *, not_before: float = 0.0,
@@ -1468,32 +1516,35 @@ class HttpClient:
         queue = self._gecko_start_waiters[high]
         ticket = object()
         condition = self._gecko_start_condition
-        while True:
-            wait = 0.0
+        async with condition:
+            queue.append(ticket)
+            condition.notify_all()
+        try:
+            while True:
+                wait = 0.0
+                async with condition:
+                    while queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
+                        # Never wrap Condition.wait() in wait_for: cancellation
+                        # can leave its lock state invalid on this Python path.
+                        await condition.wait()
+                    now = time.monotonic()
+                    wait = max(self._last[host] + max(2.1, self.min_host_interval),
+                               not_before, self._host_backoff_until.get(host, 0.0)) - now
+                    if wait <= 0:
+                        allowed = GECKO_LOW_START_ALLOWED.get()
+                        if not high and allowed is not None and not allowed():
+                            raise GeckoLowPriorityDeferred()
+                        self._last[host] = now
+                        self._gecko_starts.append(now)
+                        return
+                # Keep this request's ticket queued during pacing.  Otherwise
+                # a newly arrived held request cannot see a sleeping low lane.
+                await asyncio.sleep(max(wait, 0.0))
+        finally:
             async with condition:
-                queue.append(ticket)
-                condition.notify_all()
-                try:
-                    while True:
-                        if queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
-                            # Only `notify_all` wakes this, so the lock is held on return.
-                            await condition.wait()
-                            continue
-                        now = time.monotonic()
-                        wait = max(self._last[host] + max(2.1, self.min_host_interval),
-                                   not_before, self._host_backoff_until.get(host, 0.0)) - now
-                        if wait <= 0:
-                            allowed = GECKO_LOW_START_ALLOWED.get()
-                            if not high and allowed is not None and not allowed():
-                                raise GeckoLowPriorityDeferred()
-                            self._last[host] = now
-                            self._gecko_starts.append(now)
-                            return
-                        break
-                finally:
+                if ticket in queue:
                     queue.remove(ticket)
-                    condition.notify_all()
-            await asyncio.sleep(max(wait, 0.0))
+                condition.notify_all()
 
     async def _reserve_dex_request_start(self, *, not_before: float = 0.0) -> None:
         """Prioritize pending held starts, never hold a turn through network I/O.
@@ -1510,39 +1561,39 @@ class HttpClient:
         minutes (`periodic-tracebacks/chain_meme_pattern_observer.txt` @ 19:25:18Z carries
         exactly that traceback), the hydration backlog grew 0 -> 1,537, 1,702 discovered
         tokens never got a market frame, and only a process restart at 20:04:02Z cleared it.
-        Re-queueing after a bounded sleep keeps the original intent - a newly arrived
-        high-priority start can take the turn - without ever cancelling ``wait()``.
+        Keep the ticket visible across the outside-lock pacing sleep, so a
+        newly arrived high-priority start can take the turn without cancelling
+        ``condition.wait()`` or hiding already waiting priority work.
         """
         host = "api.dexscreener.com"
         high = DEX_REQUEST_HIGH_PRIORITY.get()
         queue = self._dex_start_waiters[high]
         ticket = object()
         condition = self._dex_start_condition
-        while True:
-            wait = 0.0
+        async with condition:
+            queue.append(ticket)
+            condition.notify_all()
+        try:
+            while True:
+                wait = 0.0
+                async with condition:
+                    while queue[0] is not ticket or (not high and self._dex_start_waiters[True]):
+                        # Only `notify_all` wakes this, so the lock is always held on return.
+                        await condition.wait()
+                    now = time.monotonic()
+                    wait = max(self._last[host] + self.min_host_interval,
+                               not_before, self._host_backoff_until.get(host, 0.0)) - now
+                    if wait <= 0:
+                        self._last[host] = now
+                        return
+                # Keep the ticket visible while the host pacing delay elapses;
+                # a high-priority held request must be able to preempt a low.
+                await asyncio.sleep(max(wait, 0.0))
+        finally:
             async with condition:
-                queue.append(ticket)
-                condition.notify_all()
-                try:
-                    while True:
-                        if queue[0] is not ticket or (not high and self._dex_start_waiters[True]):
-                            # Only `notify_all` wakes this, so the lock is always held on
-                            # return and the `finally` below can notify safely.
-                            await condition.wait()
-                            continue
-                        now = time.monotonic()
-                        wait = max(self._last[host] + self.min_host_interval,
-                                   not_before, self._host_backoff_until.get(host, 0.0)) - now
-                        if wait <= 0:
-                            self._last[host] = now
-                            return
-                        break
-                finally:
+                if ticket in queue:
                     queue.remove(ticket)
-                    condition.notify_all()
-            # Bounded by the host interval, so the lane stays responsive; the loop re-checks
-            # priority and the cooldown after waking.
-            await asyncio.sleep(max(wait, 0.0))
+                condition.notify_all()
 
     @asynccontextmanager
     async def _dex_inflight_slot(self) -> AsyncIterator[None]:
