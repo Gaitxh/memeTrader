@@ -52,6 +52,8 @@ Rollback: disable `held_flap_recovery.enabled` and restart to stop new proof pro
 
 ## Remaining priorities
 
+**Post-release natural evidence,22:57:14Z:** commit `639483e` was pushed. PID45576 remains running, heartbeat2.168s. One Robinhood opportunity (`shadow_cohort_id=15648`, token `robinhood:0x2914300226e9739c11bd9a41c374f47a9f3539b7`) naturally opened two20U Paper positions through alpha152 quiet-acceleration control/wide at22:55:34Z (trades40488/40489). This is1 independent opportunity fanned out to2 accounts, not2 independent samples. Both positions are valued from their exact entry pool, latest observation22:57:10.970075Z, liquidity20598.51U, zero current unvalued positions. Artifact `data/research/held_flap160/natural_forward_after_release.json`. This establishes one new natural decision-to-ledger event after the fixes, not attributable conversion improvement or profitability. The earlier “no new trades” paragraphs retain their earlier cutoffs.
+
 1. Verify sustained data/decision progress and actual held latency when natural positions return; no comparison of empty current inventory with the old28-pool incident as a speed improvement.
 2. Pregrad upstream watch timeout remains, as do intermittent provider timeouts; prioritize deterministic Dex lanes and bound optional probes. Do not erase error history to claim success.
 3. Earlier34-address audit and cash157 are complete; do not repeat them. Continue forward cohort conversion and independent strategy evidence after engineering coverage stabilizes. Do not fabricate profitable entries into hindsight winners.
