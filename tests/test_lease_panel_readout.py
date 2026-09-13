@@ -126,3 +126,59 @@ def test_the_two_failure_outcomes_are_documented_as_distinct():
     assert "NOT distinct tokens" in flat, (
         "the window table's unit caveat must be in the docstring: column sums are phase "
         "transitions, not tokens")
+
+
+def test_the_panel_truncation_caveat_is_documented():
+    """The round-86 correction, guarded.
+
+    `observation_leases145.dump_state(watch, now, *, limit: int = 30)` caps the checkpoint at 30 rows
+    and `bounded_summary` defaults to the same limit, so any count of leases read from the persisted
+    panel is a LOWER BOUND. Round 86 first printed 'live leases: 9' as though it were the population.
+    The module docstring must keep that caveat so the next reader does not repeat it.
+    """
+    doc = " ".join((lpr.__doc__ or "").split())
+    assert "LOWER BOUND" in doc or "lower bound" in doc, (
+        "the module docstring must state that the persisted lease count is a lower bound")
+    assert "limit: int = 30" in doc or "limit=30" in doc, (
+        "the docstring must name the parameter that truncates the panel")
+
+
+def test_candidate_slot_caps_match_the_runtime_constants():
+    """The occupancy readout compares against base_caps; if these drift the FULL flags are wrong."""
+    sys.path.insert(0, str(ROOT / "src"))
+    obs = importlib.import_module("memetrader.observation_leases145")
+    assert obs.BASE_CAPS == {"early": 3, "growth": 4, "mature": 3}
+    assert obs.CHAIN_CAP == 10
+
+
+@pytest.mark.skipif(not (ROOT / "data" / "memetrader_forward.sqlite3").is_file(),
+                    reason="live forward database not present")
+def test_live_candidate_slots_are_mostly_at_cap():
+    """The measurement that makes the user's budget decision concrete.
+
+    `non_held_by_chain_bucket` is computed in memory from the same counter that gates admission
+    (runtime.py:8148-8150 against runtime.py:7894-7898), so unlike the truncated lease list it IS a
+    direct read of runtime state. If most buckets are NOT full then candidates are no longer queueing
+    behind the cap - which would mean the slot budget is not the binding constraint, and that would be
+    worth re-examining rather than ignoring.
+    """
+    c = sqlite3.connect(f"file:{ROOT / 'data' / 'memetrader_forward.sqlite3'}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    row = c.execute("select value_json from kv where key=?", (lpr.WATCH_KEY,)).fetchone()
+    if row is None:
+        pytest.skip("watch panel not yet written")
+    nhb = (json.loads(row["value_json"]) or {}).get("non_held_by_chain_bucket") or {}
+    if not nhb:
+        pytest.skip("no bucket occupancy recorded")
+    caps = {"early": 3, "growth": 4, "mature": 3}
+    full = total = 0
+    for _chain, buckets in nhb.items():
+        for bucket, occ in (buckets or {}).items():
+            cap = caps.get(bucket, 0)
+            total += 1
+            if cap and occ >= cap:
+                full += 1
+    assert total > 0
+    assert full / total >= 0.5, (
+        f"only {full}/{total} candidate buckets are at cap; if occupancy has genuinely fallen the "
+        f"slot budget stops being the binding constraint")

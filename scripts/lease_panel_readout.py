@@ -33,6 +33,15 @@ tokens, and the panel covers only tokens admitted to the observer. Column sums a
 token population, so only WITHIN-ROW shares are comparable. Quoting a column total as "how many
 tokens" would be a unit error of exactly the kind this project has made repeatedly.
 
+SECOND CAVEAT, about the lease list itself: the persisted lease count is a LOWER BOUND, not a
+population. `observation_leases145.dump_state(watch, now, *, limit: int = 30)` caps the checkpoint at
+30 rows and `bounded_summary()` defaults to the same limit. Round 86 first printed "live leases: 9"
+as though it were how many tokens the scheduler held; it is a truncated window whose tightness cannot
+be judged from the panel alone. For a count that IS a direct read of runtime state, use
+`non_held_by_chain_bucket` from `chain-meme-pattern-watch`: it is computed in memory from the same
+counter that gates admission (runtime.py:8148-8150 against runtime.py:7894-7898) and reports
+occupancy against `base_caps`.
+
 Read-only: opens the database with mode=ro and writes nothing.
 
 Usage
@@ -108,11 +117,28 @@ def main() -> int:
         print(f"unexpected shape: leases is {type(leases).__name__}, expected list")
         return 0
 
-    summary = {"as_of": leases_at, "live_leases": len(leases)}
+    # Field names carry the caveat too: an earlier version emitted `live_leases: 9`, which reads as a
+    # population in machine form even though the panel is truncated. Rows + an explicit flag cannot be
+    # misread the same way.
+    summary = {
+        "as_of": leases_at,
+        "lease_rows_persisted": len(leases),
+        "count_is_lower_bound": True,
+        "panel_truncation_limit": 30,
+    }
 
     print(f"db        : {db}")
     print(f"panel as of: {leases_at}")
-    print(f"live lease items: {len(leases)}   (the ACTIVE watch set - not the epoch population)")
+    print(f"rows persisted: {len(leases)}")
+    print("""
+   *** THIS COUNT IS A LOWER BOUND, NOT A POPULATION ***
+   observation_leases145.dump_state(watch, now, *, limit: int = 30) caps the checkpoint at 30 rows,
+   and bounded_summary() defaults to the same limit. So the panel shows at most 30 leases and may show
+   far fewer while the runtime holds many more. Round 86 printed 'live leases: 9' as if it were the
+   population; it is a truncated window whose tightness cannot be judged from the panel alone.
+   For a count that IS a direct read of the runtime state, use `non_held_by_chain_bucket` from
+   chain-meme-pattern-watch: it is computed in memory from the same counter that gates admission
+   (runtime.py:8148-8150 against runtime.py:7894-7898) and reports occupancy against base_caps.""")
 
     if args.json:
         print(json.dumps(summary, indent=2, default=str))
@@ -187,8 +213,26 @@ def main() -> int:
     watch, watch_at = kv(WATCH_KEY)
     if isinstance(watch, dict):
         print(f"   {WATCH_KEY}  ({watch_at})")
+        nhb = watch.get("non_held_by_chain_bucket") or {}
+        if nhb:
+            # This one IS a direct read of the runtime's admission counter, unlike the truncated
+            # lease list above - see the caveat printed at the top of this output.
+            caps = {"early": 3, "growth": 4, "mature": 3}
+            print("   CANDIDATE SLOT OCCUPANCY (non_held_by_chain_bucket vs base_caps):")
+            full = total = 0
+            for chain, buckets in nhb.items():
+                for bucket, occ in (buckets or {}).items():
+                    cap = caps.get(bucket, 0)
+                    isfull = occ >= cap
+                    full += 1 if isfull else 0
+                    total += 1
+                    print(f"      {str(chain):<11} {str(bucket):<8} {occ:>3}/{cap:<3} "
+                          f"{'FULL' if isfull else ''}")
+            print(f"      -> {full} of {total} buckets at cap. Held positions do NOT consume these")
+            print(f"         slots (runtime.py:7894 gates only `if key not in held`), so FULL here means")
+            print(f"         candidates are waiting behind the candidate cap.")
         for k in ("borrows_since_start", "mover_watching", "mover_reserved_admissions",
-                  "mover_reserved_injections", "mover_injected_tokens", "other_pool_quote_skips_since_start"):
+                  "mover_reserved_injections", "other_pool_quote_skips_since_start"):
             if k in watch:
                 v = watch[k]
                 print(f"      {k:<38} {str(v)[:60]}")
