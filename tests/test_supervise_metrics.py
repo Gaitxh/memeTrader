@@ -44,9 +44,19 @@ def test_stability_ignores_fixed_cases_and_parses_iso_timestamps():
         "INSERT INTO system_error_cases VALUES(?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'new')",
         ("runtime", "active", "Timeout", "safe", 1, "2026-01-01T00:00:00Z"),
     )
+    con.execute(
+        "INSERT INTO system_error_cases VALUES(?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute'),'new')",
+        ("runtime", "recovered-new", "Timeout", "safe", 1, "2026-01-01T00:00:00Z"),
+    )
+    con.execute(
+        "INSERT INTO source_health VALUES('recovered-new',strftime('%Y-%m-%dT%H:%M:%fZ','now'),"
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute'),'')"
+    )
     out = stability(con, 1)
     assert [row["component"] for row in out["active_error_cases"]] == ["active"]
-    assert [row["component"] for row in out["unresolved_errors"]] == ["active"]
+    assert {row["component"] for row in out["unresolved_errors"]} == {
+        "active", "recovered-new",
+    }
 
 
 def test_execution_integrity_exposes_unaccounted_matches_and_paper_boundary():

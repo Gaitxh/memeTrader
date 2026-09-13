@@ -240,10 +240,12 @@ def stability(con, hours):
         "ORDER BY julianday(last_seen_at) DESC LIMIT 10",
         (f"-{int(hours)} hour",))]
     active = [dict(row) for row in con.execute(
-        "SELECT component, error_type, occurrence_count, first_seen_at, last_seen_at "
-        "FROM system_error_cases WHERE status IN ('new','in_progress') "
-        "AND julianday(last_seen_at)>=julianday('now','-15 minute') "
-        "ORDER BY julianday(last_seen_at) DESC LIMIT 10")]
+        "SELECT e.component,e.error_type,e.occurrence_count,e.first_seen_at,e.last_seen_at "
+        "FROM system_error_cases e LEFT JOIN source_health h ON h.source=e.component "
+        "WHERE e.status IN ('new','in_progress') "
+        "AND julianday(e.last_seen_at)>=julianday('now','-15 minute') "
+        "AND (h.last_ok_at IS NULL OR julianday(h.last_ok_at)<=julianday(e.last_seen_at)) "
+        "ORDER BY julianday(e.last_seen_at) DESC LIMIT 10")]
     sources = [dict(row) for row in con.execute(
         "SELECT source, last_ok_at, last_error_at, last_error FROM source_health "
         "ORDER BY COALESCE(last_ok_at,'') DESC LIMIT 12")]

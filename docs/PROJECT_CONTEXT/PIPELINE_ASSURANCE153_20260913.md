@@ -65,7 +65,8 @@ the replay is observational and order-dependent.
 4. `scripts/supervise_metrics.py` now reports due follow-up count/lateness, current
    mark age, admitted decisions without any auditable outcome, fill lineage errors,
    and the synthetic-Paper versus order-intent fill boundary. Its error queries now
-   use `julianday()` and exclude cases already marked `fixed`.
+   use `julianday()`, exclude cases already marked `fixed`, and do not call an error
+   active when the same source has a later successful heartbeat.
 
 ## Verification and rollback
 
