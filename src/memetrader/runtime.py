@@ -1764,6 +1764,8 @@ class Runtime:
             # count is unchanged (ceil(n/30) is re-asserted) and nothing is added
             # for high-priority, non-fresh or disabled callers.
             selected_alpha149: dict[str, str] = {}
+            post_selected151, post_extras151 = [], set()
+            post151 = getattr(self, '_post_exit151', None)
             manager_alpha149 = getattr(self, "_shared_batch148", None)
             if (allow_shared_spares149 and fresh and not high_priority and addresses
                     and getattr(self, "chain_meme_trader_only", False)
@@ -1771,6 +1773,9 @@ class Runtime:
                 addresses, selected_alpha149 = manager_alpha149.extend_batch_lease(
                     chain, list(addresses), utcnow(),
                 )
+            if (allow_shared_spares149 and fresh and not high_priority and addresses and post151
+                    and getattr(manager_alpha149, 'enabled', True)):
+                addresses, post_selected151, post_extras151 = post151.extend(chain, addresses, utcnow())
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
                     # httpx phase timeouts are not a wall-clock deadline: a
@@ -1839,6 +1844,12 @@ class Runtime:
             if self._dex_quote_backoff_until <= loop.time():
                 self._dex_quote_failure_streak = 0
                 self._dex_quote_backoff_until = 0.0
+            if post_selected151:
+                try:
+                    post151.response(self.store, quoted, post_selected151, utcnow(), DexScreenerClient._snapshot)
+                except Exception:
+                    post151.counts['record_errors'] += 1
+                quoted = {k: v for k, v in (quoted or {}).items() if k not in post_extras151}
             if selected_alpha149 and manager_alpha149 is not None:
                 # Return-value isolation: the caller keeps only the identities it
                 # asked for; extras go to the shared feature-only channel.
@@ -9808,6 +9819,9 @@ class Runtime:
                         timing_snapshot["shared_batch_coverage"] = batch_manager.snapshot(utcnow())
                     except Exception:
                         pass
+                post151 = getattr(self, '_post_exit151', None)
+                if post151 is not None:
+                    timing_snapshot['post_exit151'] = post151.snapshot()
                 self.store.record_runtime_timing(timing_snapshot)
                 self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
@@ -9838,7 +9852,7 @@ class Runtime:
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
                    'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
-                   'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py')
+                   'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},
@@ -9858,7 +9872,10 @@ class Runtime:
 
         if self.chain_meme_trader_only:
             from .forward_review151 import run as forward_review151_run
+            from .post_exit151 import run as post_exit151_run
             tasks = [
+                *([asyncio.create_task(post_exit151_run(self), name='post_exit151')]
+                  if self.config.get('optimization151', {}).get('post_exit_enabled', True) else []),
                 *([asyncio.create_task(forward_review151_run(self), name='forward_review151')]
                   if self.config.get('optimization151', {}).get('review_enabled', True) else []),
                 asyncio.create_task(self._periodic('narrative_hold_v2', 15, self.narrative_hold.once), name='narrative_hold_v2'),

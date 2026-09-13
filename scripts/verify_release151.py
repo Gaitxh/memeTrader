@@ -34,7 +34,7 @@ def main():
         {k:r.get(k) for k in ('id','component','error_type','occurrence_count','last_seen_at')}
         for r in errors.get('cases',[]) if r.get('status') not in ('fixed','ignored')]}
     perf=get('/api/performance'); timing=perf.get('timing') or {}
-    out['performance']={k:timing.get(k) for k in ('components','passive_queue','dex_http_capacity','shared_batch_coverage')}
+    out['performance']={k:timing.get(k) for k in ('components','passive_queue','dex_http_capacity','shared_batch_coverage','post_exit151')}
     out['performance']['recorded_at']=perf.get('timing_recorded_at')
     source=ROOT/'src/memetrader'; manifest=out['runtime-loaded-manifest'] or {}
     out['loaded_hash_matches']={name:hashlib.sha256((source/name).read_bytes()).hexdigest()==value

@@ -2,6 +2,7 @@
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
+from memetrader.models import canonical_token_address
 
 
 def date(value):
@@ -22,7 +23,9 @@ def visible_mark(c, token, pool, start, end):
     for row in candidates:
         row = dict(row)
         recorded, observed = date(row['recorded_at']), date(row['observed_at'])
-        if (row['pair_address'] == pool and row['status'] == 'VISIBLE' and (row['price_usd'] or 0) > 0
+        chain = token.split(':', 1)[0]
+        if (canonical_token_address(chain, row['pair_address']) == canonical_token_address(chain, pool)
+                and row['status'] == 'VISIBLE' and (row['price_usd'] or 0) > 0
                 and start <= observed <= recorded <= end and 0 <= (recorded-observed).total_seconds() <= 15):
             return row
     return None
@@ -30,11 +33,18 @@ def visible_mark(c, token, pool, start, end):
 
 def washout(c, cutoff):
     cutoff = date(cutoff)
+    mature_before = stamp(cutoff - timedelta(minutes=16))
+    # Recent high fan-out exits can fill all 200 seats with <16-minute-old
+    # positions. Sampling those every two hours forever reports only maturing
+    # and discards the mature cohorts the report was meant to evaluate.
+    pending = c.execute('SELECT COUNT(*) n,COUNT(DISTINCT token_id) tokens FROM '
+        'chain_meme_trader_positions WHERE closed_at>? AND closed_at<=?', (mature_before,stamp(cutoff))).fetchone()
     closed = c.execute('SELECT p.arm_id,p.token_id,p.shadow_cohort_id,p.closed_at,p.close_reason, '
         'p.source_entry_fill_id,COALESCE(json_extract(s.raw_json,\'$.pair.pairAddress\'), v.pair_address) pool '
-        'FROM (SELECT * FROM chain_meme_trader_positions WHERE closed_at IS NOT NULL '
+        'FROM (SELECT * FROM chain_meme_trader_positions WHERE closed_at<=? '
         'ORDER BY closed_at DESC LIMIT 200) p LEFT JOIN token_snapshots s ON s.id=p.entry_snapshot_id '
-        'LEFT JOIN chain_meme_trader_v6_cohorts v ON v.id=p.shadow_cohort_id AND v.token_id=p.token_id').fetchall()
+        'LEFT JOIN chain_meme_trader_v6_cohorts v ON v.id=p.shadow_cohort_id AND v.token_id=p.token_id',
+        (mature_before,)).fetchall()
     outcomes = []
     for pos in closed:
         pos = dict(pos); ended = date(pos['closed_at'])
@@ -62,6 +72,8 @@ def washout(c, cutoff):
             result['horizons'][str(minutes)] = outcome
         outcomes.append(result)
     return {'definition': 'Exit price observation to first valid original-pool observation in +5/+15m to +60s; >=20% non-risk-exit rebound candidate. Not executable or cost-net washout proof.',
+        'sample_scope': 'Latest <=200 mature exits; arm fan-out is not independent; newer incomplete windows reported separately.',
+        'maturing_positions': pending['n'], 'maturing_tokens': pending['tokens'],
         'positions': len(outcomes), 'independent_token_entries': len({(x['token_id'], x['source_entry_fill_id'] or x['shadow_cohort_id']) for x in outcomes}),
         'counts': {str(m): dict(Counter(x['horizons'][str(m)]['status'] for x in outcomes)) for m in (5,15)}, 'samples': outcomes}
 

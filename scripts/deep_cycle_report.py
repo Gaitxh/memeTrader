@@ -74,7 +74,7 @@ def _summary(c,path,minutes,historical=False):
       r=c.execute('SELECT recorded_at,payload_json FROM runtime_timing_latest ORDER BY id DESC LIMIT 1').fetchone()
       try:
        payload=json.loads(r['payload_json']) if r else {}
-       out['api_performance']={'recorded_at':r['recorded_at'],'dex_http_capacity':payload.get('dex_http_capacity'),'shared_batch':payload.get('shared_batch_coverage')} if r else None
+       out['api_performance']={'recorded_at':r['recorded_at'],'dex_http_capacity':payload.get('dex_http_capacity'),'shared_batch':payload.get('shared_batch_coverage'),'post_exit151':payload.get('post_exit151')} if r else None
        out['runtime_timing_compact']={k:(payload.get('components') or {}).get(k) for k in ('alpha149_features','chain_meme_entry_batch','chain_meme_cohort_observer','chain_meme_market_marks','held_fetch','held_apply_exit')}
        out['passive_queue']=payload.get('passive_queue') or {'unknown':'missing'}; out['held_retrieval']=payload.get('held_retrieval') or {'unknown':'missing'}
       except (ValueError,TypeError): out['api_performance']={'unknown':'malformed_payload'}
@@ -114,6 +114,6 @@ def main():
  for x in f.get('matched_token_funnel',[]): lines.append(f"- {x['chain']}: 发现 {x['discovered_tokens']}，入库快照 {x['snapshot_ingested_tokens']}，评估 {x['evaluated_tokens']}；评估延迟 p50/p90/p99={x['latency_seconds']['discovery_to_evaluation']}")
  for title,key in [('同机会入场路径','cohort_funnel'),('真实拒绝原因','genuine_evaluation_rejects'),('请求与持仓时延','runtime_timing_compact'),('队列','passive_queue'),('策略控制','lifecycle_controls'),('错误监督','error_supervision'),('成本后Paper已实现结果','pnl'),('退出原因','exit_reasons')]:
   lines += ['', '## '+title, '```json', json.dumps(f.get(key),ensure_ascii=False,indent=2), '```']
- lines += ['', '## 固定窗口退出后观察', json.dumps({k:v for k,v in f['washout_proxy'].items() if k!='samples'},ensure_ascii=False), '', '## 真实性边界', *['- '+x for x in report['limits']], '- 无法恢复的历史发现与池/机会关联不补造；不按事后涨幅认定当时应该买入。']
+ lines += ['', '## 固定窗口退出后观察', json.dumps({k:v for k,v in f['washout_proxy'].items() if k!='samples'},ensure_ascii=False), '', '研究采样器：'+json.dumps((f.get('api_performance') or {}).get('post_exit151'),ensure_ascii=False), '', '## 真实性边界', *['- '+x for x in report['limits']], '- 无法恢复的历史发现与池/机会关联不补造；不按事后涨幅认定当时应该买入。']
  (out/(stem+'.md')).write_text('\n'.join(lines)+'\n',encoding='utf8'); print(json.dumps({'json':str(out/(stem+'.json')),'markdown':str(out/(stem+'.md'))},ensure_ascii=False))
 if __name__=='__main__': main()

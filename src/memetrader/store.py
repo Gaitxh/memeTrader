@@ -2947,6 +2947,8 @@ class Store:
                     WHERE status='open';
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_token_history_idx
                     ON chain_meme_trader_positions(definition_version,token_id,arm_id,shadow_cohort_id);
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_closed151_idx
+                    ON chain_meme_trader_positions(closed_at) WHERE closed_at IS NOT NULL;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_decisions (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,

@@ -29,3 +29,23 @@ def test_fixed_horizon_observation_excludes_wrong_pool_stale_and_future():
     assert mark['id']==4
     assert visible_mark(c,'solana:T','missing',date('2026-09-13T00:05:00Z'),date('2026-09-13T00:06:00Z')) is None
     c.close()
+
+
+def test_maturing_fanout_does_not_hide_mature_exit_samples(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from test_age_rate_revision_store import fixture
+    from memetrader.models import iso
+    from scripts.review_metrics151 import washout, date
+    store, pos, mark, policies = fixture(tmp_path, monkeypatch)
+    arm = policies[0]['arm_id']
+    row = pos(arm)
+    closed = date(row['opened_at']) + timedelta(minutes=10)
+    # The report is read-only; test fixtures explicitly create terminal states.
+    store.db.execute("UPDATE chain_meme_trader_positions SET status='closed',closed_at=?", (iso(closed+timedelta(minutes=30)),))
+    store.db.execute("UPDATE chain_meme_trader_positions SET closed_at=? WHERE arm_id=?", (iso(closed),arm))
+    result = washout(store.db,iso(closed+timedelta(minutes=31)))
+    assert result['positions'] == 1
+    assert result['samples'][0]['arm_id'] == arm
+    assert result['maturing_positions'] == 3
+    assert not result['counts']['15'].get('maturing')
+    store.close()
