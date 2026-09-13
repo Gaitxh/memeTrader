@@ -120,11 +120,45 @@ def load(c, min_marks):
             excluded += 1
             continue
         cases.append({
-            "marks": marks, "ep": ep, "cl": cl,
+            "marks": marks, "ep": ep, "cl": cl, "tok": str(r["token_id"]),
             "actual": float(r["realized_pnl_usd"] or 0) / stake,
             "reason": str(r["close_reason"] or "").split(":")[0][:34],
         })
     return cases, excluded
+
+
+def cluster(cases, value_key):
+    """Aggregate a per-position value to the TOKEN, then bootstrap the token-clustered mean.
+
+    WHY THIS EXISTS. The fleet runs 188 arms over a shared discovery stream, so thousands of positions
+    are the SAME underlying outcome recorded many times: round 84 measured 4,643 settled positions
+    covering only 94 distinct tokens, a median of 59 positions per token. A per-position interval
+    therefore treats copies as independent draws and is far too narrow. The independent unit is the
+    TOKEN, and the interval below is built by resampling tokens.
+    """
+    import random
+    by_tok = collections.defaultdict(float)
+    for x in cases:
+        by_tok[x["tok"]] += x[value_key]
+    deltas = sorted(by_tok.values())
+    m = len(deltas)
+    if m == 0:
+        return None
+    rng = random.Random(20260913)
+    draws = []
+    for _ in range(2000):
+        pick = [deltas[rng.randrange(m)] for _ in range(m)]
+        draws.append(sum(pick) / m)
+    draws.sort()
+    return {
+        "tokens": m,
+        "mean": sum(deltas) / m,
+        "median": deltas[m // 2],
+        "lo": draws[int(0.05 * len(draws))],
+        "hi": draws[int(0.95 * len(draws))],
+        "improved": sum(1 for d in deltas if d > 1e-9),
+        "worsened": sum(1 for d in deltas if d < -1e-9),
+    }
 
 
 def report(cases, label, drawdowns, arm_levels):
@@ -173,6 +207,12 @@ def main() -> int:
     print("\n" + "=" * 90)
     print("1. WHAT ACTUALLY HAPPENED, BY EXIT PATH")
     print("=" * 90)
+    toks = {x["tok"] for x in cases}
+    print(f"   THE DENOMINATOR THAT MATTERS: {len(cases)} positions over {len(toks)} DISTINCT TOKENS"
+          f"  ({len(cases)/max(1,len(toks)):.1f} positions per token)")
+    print("   The fleet runs many arms over a shared discovery stream, so positions are the same")
+    print("   underlying outcome recorded repeatedly. The independent unit is the TOKEN, and every")
+    print("   interval below is token-clustered; a per-position interval would be far too narrow.")
     by = collections.defaultdict(list)
     for x in cases:
         by[x["reason"]].append(x["actual"])
@@ -220,6 +260,30 @@ def main() -> int:
     else:
         report(sel, f"CONTROL: last mark within {args.control_seconds:.0f}s of close",
                DEFAULT_DRAWDOWNS[:4], DEFAULT_ARM_LEVELS[:2])
+
+    print("\n" + "=" * 90)
+    print("5. TOKEN-CLUSTERED VIEW -- the interval the real sample supports")
+    print("=" * 90)
+    for x in cases:
+        x["rule25"] = trailing(x["marks"], x["ep"], DEFAULT_ARM_DRAWDOWN)
+        x["delta"] = x["rule25"] - x["actual"]
+    st = cluster(cases, "delta")
+    if st is None:
+        print("   not enough tokens")
+    else:
+        print(f"   distinct tokens            : {st['tokens']} "
+              f"(versus {len(cases)} positions)")
+        print(f"   mean per-TOKEN delta       : {st['mean']:+.3f} U")
+        print(f"   median per-TOKEN delta     : {st['median']:+.3f} U")
+        print(f"   90% CI (token-clustered)   : [{st['lo']:+.3f}, {st['hi']:+.3f}]")
+        print(f"   EXCLUDES ZERO              : {st['lo'] > 0 or st['hi'] < 0}")
+        print(f"   tokens IMPROVED / WORSENED : {st['improved']} / {st['worsened']}")
+        print("\n   READ THE MEDIAN AS WELL AS THE MEAN. If the mean is much larger than the median, the")
+        print("   gain is carried by a tail of tokens rather than being typical - round 31's concentration")
+        print("   rule. And quote the effect PER TOKEN: the position-level figure is this one multiplied")
+        print("   by the duplication factor, which is not additional evidence.")
+        if abs(st["mean"]) > 3 * max(1e-9, abs(st["median"])):
+            print("\n   NOTE: mean is more than 3x the median here, so the effect IS tail-driven.")
 
     print("\n" + "=" * 90)
     print("WHAT THIS DOES NOT SETTLE")

@@ -107,6 +107,46 @@ def test_load_reports_exclusions_rather_than_hiding_them():
         "load() must return the excluded count alongside the usable cases")
 
 
+def test_cluster_aggregates_to_tokens_not_positions():
+    """The round-84 correction, asserted.
+
+    The fleet runs 188 arms over a shared discovery stream; round 84 measured 4,643 settled positions
+    covering only 94 distinct tokens. A per-position interval therefore treats copies of one outcome
+    as independent draws. `cluster` must aggregate by token before resampling.
+    """
+    cases = (
+        # token A: 5 positions that all improve by +1 each -> +5 for the token
+        [{"tok": "A", "delta": 1.0} for _ in range(5)]
+        # token B: 1 position that worsens by -2        -> -2 for the token
+        + [{"tok": "B", "delta": -2.0}]
+    )
+    st = erc.cluster(cases, "delta")
+    assert st is not None
+    assert st["tokens"] == 2, "the independent unit is the token, not the position"
+    assert st["mean"] == pytest.approx(1.5), "(5 + -2) / 2 tokens"
+    assert st["improved"] == 1 and st["worsened"] == 1
+    # a position-level mean would be (1+1+1+1+1-2)/6 = +0.5, i.e. a different (and wrong) number
+    assert st["mean"] != pytest.approx(0.5)
+
+
+def test_cluster_interval_is_wider_than_a_position_level_one():
+    """Deduplication must not manufacture precision.
+
+    Two tokens with opposite signs: the token-clustered interval must include zero, whereas a
+    position-level bootstrap over many copies of the dominant token would appear tight and exclude it.
+    """
+    cases = [{"tok": "A", "delta": 1.0} for _ in range(50)] + [{"tok": "B", "delta": -1.0}]
+    st = erc.cluster(cases, "delta")
+    assert st["tokens"] == 2
+    assert st["lo"] <= 0 <= st["hi"], (
+        "with two independent tokens of opposite sign the interval must span zero; if it does not, "
+        "the clustering is not taking effect")
+
+
+def test_cluster_handles_empty_input():
+    assert erc.cluster([], "delta") is None
+
+
 def test_defaults_are_the_ones_the_analysis_used():
     assert 0.25 in erc.DEFAULT_DRAWDOWNS
     assert erc.DEFAULT_ARM_DRAWDOWN == 0.25
