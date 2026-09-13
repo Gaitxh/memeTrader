@@ -187,6 +187,18 @@ def main() -> None:
         short = item["address"][:10] + "…"
         gap = item.get("max_adjacent_snapshot_gap_seconds")
         multiple = item.get("max_observed_multiple")
+        live_hits = [
+            hit for hit in item.get("dexscreener_live_lookup", [])
+            if hit.get("status") == "found"
+        ]
+        if item["local_status"] == "not_found" and live_hits:
+            chains = ",".join(sorted({str(hit.get("chain") or "unknown") for hit in live_hits}))
+            pairs = ",".join(str(hit.get("pair") or "") for hit in live_hits[:2])
+            lines.append(
+                f"| `{short}` | 本地缺失；DexScreener={chains} | 0/0 | — | — | "
+                f"local_not_found_provider_pair={pairs} | 0 |"
+            )
+            continue
         lines.append(
             f"| `{short}` | {item.get('chain','—')} | "
             f"{item.get('snapshot_count',0)}/{item.get('distinct_observation_times',0)} | "
