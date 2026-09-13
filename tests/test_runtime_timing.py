@@ -65,6 +65,50 @@ def test_runtime_timing_empty_snapshot_and_missing_intervals():
     timing = RuntimeTiming()
     empty = timing.snapshot()
     assert empty["components"] == {}
+    assert empty["activity"] == {}
+
+
+def test_activity_ledger_survives_eviction_and_never_decreases():
+    """The round-88 defect, guarded.
+
+    `components` is a bounded LRU whose `items` restarts at 0 when an entry is recreated, so a reader
+    could watch a counter go DOWN: `pattern_token_compute` was measured going 415 -> 22 and
+    `learning145_flush` 5 -> 0 inside three minutes. The `activity` ledger must be immune to that.
+    """
+    timing = RuntimeTiming()
+    timing.observe("alpha149_coverage_offers", 0.0, items=7)
+    timing.observe("alpha149_coverage_offers", 0.0, items=5)
+    # Fill and then overflow the bounded component registry so the entry above is evicted.
+    for index in range(MAX_COMPONENTS + 4):
+        timing.observe(f"filler_{index}", 1.0)
+
+    snapshot = timing.snapshot()
+    assert "alpha149_coverage_offers" not in snapshot["components"], (
+        "this test needs the component to be evicted for the ledger claim to mean anything")
+    entry = snapshot["activity"]["alpha149_coverage_offers"]
+    assert entry["items"] == 12
+    assert entry["calls"] == 2
+
+    # Re-observing recreates the component at items=0 while the ledger keeps accumulating.
+    timing.observe("alpha149_coverage_offers", 0.0, items=3)
+    after = timing.snapshot()
+    assert after["components"]["alpha149_coverage_offers"]["items"] == 3
+    assert after["activity"]["alpha149_coverage_offers"]["items"] == 15, (
+        "the ledger must be monotone even when the bounded component entry restarts")
+
+
+def test_activity_ledger_names_every_component_ever_observed():
+    """55 names are registered against a capacity of 32, so visibility is the ledger's whole point."""
+    timing = RuntimeTiming()
+    for index in range(MAX_COMPONENTS + 8):
+        timing.observe(f"loop_{index}", 0.5, failures=int(index == 0))
+    snapshot = timing.snapshot()
+    assert len(snapshot["components"]) == MAX_COMPONENTS
+    assert len(snapshot["activity"]) == MAX_COMPONENTS + 8
+    assert snapshot["activity"]["loop_0"]["failures"] == 1
+    assert snapshot["activity"][f"loop_{MAX_COMPONENTS + 7}"]["calls"] == 1
+    # Sorted, so the payload is byte-stable for a given state and diffs cleanly.
+    assert list(snapshot["activity"]) == sorted(snapshot["activity"])
 
     timing.observe("mark_batch", 0.25, items=2)
     component = timing.snapshot()["components"]["mark_batch"]
