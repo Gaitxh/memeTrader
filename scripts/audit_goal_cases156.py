@@ -1,0 +1,271 @@
+"""Bounded, read-only extension of righttail152 to every goal-supplied address.
+
+Never an entry allow-list. No network calls, strategy mutations or peak-price
+backfill. All canonical chain matches remain separate. Histories exceeding the
+sample budget are marked incomplete, not silently reported as zero.
+"""
+from __future__ import annotations
+
+import argparse
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import sqlite3
+import time
+
+from audit_user_righttail152 import ADDRESSES
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def addresses_from_text(text):
+    found = []
+    for line in text.splitlines():
+        value = line.strip()
+        if re.fullmatch(r"0x[0-9a-fA-F]{20,64}", value):
+            value = value.lower()
+        elif not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", value):
+            continue
+        if value not in found:
+            found.append(value)
+    return found
+
+
+def candidate_ids(address):
+    if address.startswith('0x'):
+        return [chain + ':' + address.lower() for chain in ('bsc', 'robinhood')]
+    return ['solana:' + address]
+
+
+def stamp(value):
+    try:
+        value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return value.timestamp() if value.tzinfo is not None else None
+    except (AttributeError, ValueError):
+        return None
+
+
+def quantiles(values):
+    values = sorted(values)
+    return {name: values[round((len(values)-1)*p)] if values else None
+            for name, p in [('p50', .5), ('p90', .9), ('p99', .99)]}
+
+
+def asof_rows(rows, field, cutoff):
+    """Do not let malformed/future event clocks masquerade as as-of evidence."""
+    return [row for row in rows if (value := stamp(row.get(field))) is not None and value <= cutoff]
+
+
+def snapshot_summary(rows, cutoff):
+    pools = defaultdict(dict)
+    invalid = Counter()
+    processing = []
+    for row in rows:
+        observed, recorded = stamp(row['observed_at']), stamp(row['recorded_at'])
+        pair = row['pair_address']
+        if pair and pair.startswith('0x'):
+            pair = pair.lower()
+        price, liquidity = row['price_usd'], row['liquidity_usd']
+        if observed is None or recorded is None or not observed <= recorded <= cutoff:
+            invalid['causal_time_invalid'] += 1
+            continue
+        if recorded-observed > 15:
+            invalid['stale_at_ingestion'] += 1
+            continue
+        if not pair:
+            invalid['pool_unknown'] += 1
+            continue
+        if not isinstance(price, (float, int)) or not math.isfinite(price) or price <= 0:
+            invalid['price_invalid'] += 1
+            continue
+        if not isinstance(liquidity, (int, float)) or not math.isfinite(liquidity) or liquidity < 0:
+            invalid['liquidity_unknown_or_invalid'] += 1
+            continue
+        # Same-time replays are one observation, not evidence of fresh sampling.
+        pools[pair].setdefault(observed, row['id'])
+        processing.append(recorded - observed)
+    result = []
+    for pair, observations in pools.items():
+        times = sorted(observations)
+        gaps = [b-a for a, b in zip(times, times[1:])]
+        result.append(dict(pool=pair, distinct_observations=len(times),
+            first_observed_at=datetime.fromtimestamp(times[0], timezone.utc).isoformat(),
+            last_observed_at=datetime.fromtimestamp(times[-1], timezone.utc).isoformat(),
+            adjacent_gaps_seconds=quantiles(gaps), max_gap_seconds=max(gaps, default=None)))
+    return dict(pools=result, invalid_rows=dict(invalid),
+                observed_to_recorded_seconds=quantiles(processing))
+
+
+def audit(connection, addresses, version, *, row_limit=3000, seconds=30):
+    deadline = time.monotonic() + seconds
+    connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+    cutoff = datetime.now(timezone.utc)
+
+    def rows(sql, args=()):
+        return [dict(x) for x in connection.execute(sql, args)]
+
+    results = []
+    for address in addresses:
+        matches = []
+        for token_id in candidate_ids(address):
+            matches += rows('SELECT token_id,chain,address,name,symbol,source,first_seen_at,last_seen_at '
+                            'FROM tokens WHERE token_id=?', (token_id,))
+        result = dict(address=address, original_15=address in ADDRESSES, matches=[],
+            address_validation=('invalid_evm_length' if address.startswith('0x') and len(address) != 42
+                                else 'syntax_only_not_chain_existence'))
+        for token in matches:
+            token_id = token['token_id']
+            item = dict(token=token)
+            result['matches'].append(item)
+            try:
+                item['excluded_invalid_or_future_time'] = {}
+
+                def causal(values, field, label):
+                    valid = asof_rows(values, field, cutoff.timestamp())
+                    item['excluded_invalid_or_future_time'][label] = len(values) - len(valid)
+                    return valid
+
+                # All large histories use token/source/cohort index prefixes.
+                snapshots = rows("SELECT id,observed_at,recorded_at,provider,price_usd,liquidity_usd,"
+                    "COALESCE(json_extract(raw_json,'$.pair.pairAddress'),"
+                    "json_extract(raw_json,'$.pairAddress')) pair_address FROM token_snapshots "
+                    "WHERE token_id=? ORDER BY observed_at,id LIMIT ?", (token_id, row_limit+1))
+                item['snapshot_history_truncated'] = len(snapshots) > row_limit
+                snapshots = snapshots[:row_limit]
+                item['sampled_snapshot_count'] = len(snapshots)
+                item['sampled_snapshot_time_range'] = [snapshots[0]['observed_at'], snapshots[-1]['observed_at']] if snapshots else []
+                item['market_observations'] = snapshot_summary(snapshots, cutoff.timestamp())
+                evaluations = []
+                for start in range(0, len(snapshots), 400):
+                    ids = [x['id'] for x in snapshots[start:start+400]]
+                    placeholders = ','.join('?' for _ in ids)
+                    evaluations += rows('SELECT id,source_snapshot_id,status,reason,evaluated_at '
+                        'FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? '
+                        f'AND source_snapshot_id IN ({placeholders}) AND token_id=?', [version, *ids, token_id])
+                evaluations = causal(evaluations, 'evaluated_at', 'evaluations')
+                item['evaluation_sample_count'] = len(evaluations)
+                item['evaluation_reasons'] = dict(Counter(x['reason'] for x in evaluations))
+                item['first_evaluation'] = min(evaluations, key=lambda x: (stamp(x['evaluated_at']), x['id']), default=None)
+                cohorts = rows('SELECT id,pair_address,entry_family,decided_at,source_snapshot_id '
+                    'FROM chain_meme_trader_v6_cohorts WHERE definition_version=? AND token_id=? '
+                    'ORDER BY decided_at,id LIMIT ?', (version, token_id, row_limit+1))
+                item['cohort_history_truncated'] = len(cohorts) > row_limit
+                cohorts = causal(cohorts[:row_limit], 'decided_at', 'cohorts')
+                opportunities = []
+                for cohort in cohorts:
+                    decisions = rows('SELECT id,arm_id,status,reason,decided_at FROM '
+                        'chain_meme_trader_entry_decisions WHERE definition_version=? AND shadow_cohort_id=?',
+                        (version, cohort['id']))
+                    decisions = causal(decisions, 'decided_at', f"decisions:{cohort['id']}")
+                    fills = rows('SELECT id,execution_attempt_id,execution_result_id,filled_at,'
+                        'entry_market_price_usd,execution_price_usd,output_token_quantity,slippage_bps FROM '
+                        'chain_meme_trader_v6_entry_fills WHERE definition_version=? AND entry_cohort_id=?',
+                        (version, cohort['id']))
+                    fills = causal(fills, 'filled_at', f"fills:{cohort['id']}")
+                    outcomes = rows('SELECT id,arm_id,entry_decision_id,entry_fill_id,outcome,'
+                        'available_cash_usd,recorded_at FROM chain_meme_trader_entry_participant_outcomes '
+                        'WHERE definition_version=? AND shadow_cohort_id=?', (version, cohort['id']))
+                    outcomes = causal(outcomes, 'recorded_at', f"outcomes:{cohort['id']}")
+                    opportunities.append(dict(cohort=cohort, arm_decisions=decisions,
+                        source_fills=fills, participant_outcomes=outcomes))
+                item['opportunities'] = opportunities
+                item['admitted_arm_decisions'] = sum(x['status'] == 'admitted'
+                    for o in opportunities for x in o['arm_decisions'])
+                item['admitted_unique_cohorts'] = sum(any(x['status'] == 'admitted'
+                    for x in o['arm_decisions']) for o in opportunities)
+                positions = rows('SELECT arm_id,shadow_cohort_id,status,opened_at,closed_at,close_reason,'
+                    'entry_snapshot_id,source_entry_fill_id,source_buy_trade_id FROM '
+                    'chain_meme_trader_positions WHERE definition_version=? AND token_id=? '
+                    'ORDER BY arm_id,shadow_cohort_id LIMIT ?', (version, token_id, row_limit+1))
+                item['position_history_truncated'] = len(positions) > row_limit
+                item['positions'] = causal(positions[:row_limit], 'opened_at', 'positions')
+                item['first_position_at'] = min((x['opened_at'] for x in item['positions']), default=None)
+                item['filled_unique_cohorts'] = len({x['shadow_cohort_id'] for x in item['positions']})
+                safety = rows("SELECT id,pair_address,kind,recorded_at,"
+                    "json_extract(payload_json,'$.cohort_id') cohort_id,"
+                    "json_extract(payload_json,'$.snapshot_id') snapshot_id,"
+                    "json_extract(payload_json,'$.requested_at') requested_at,"
+                    "json_extract(payload_json,'$.expires_at') expires_at,"
+                    "json_extract(payload_json,'$.assessment.reasons') reasons,"
+                    "json_extract(payload_json,'$.assessment.unknowns') unknowns,"
+                    "json_extract(payload_json,'$.safety_status') safety_status FROM chain_meme_pattern_evidence "
+                    "WHERE definition_version=? AND token_id=? AND kind='preentry_obvious_scam_v1' "
+                    "ORDER BY pair_address,kind,id DESC LIMIT ?", (version, token_id, row_limit+1))
+                item['safety_history_truncated'] = len(safety) > row_limit
+                item['safety_evidence'] = causal(safety[:row_limit], 'recorded_at', 'safety_evidence')
+                for opportunity in opportunities:
+                    opportunity['safety_evidence_ids'] = [x['id'] for x in item['safety_evidence']
+                        if x['cohort_id'] == opportunity['cohort']['id']]
+                if item['positions']:
+                    item['path_status'] = 'paper_position_recorded_not_proof_of_early_capture'
+                elif item['admitted_arm_decisions']:
+                    item['path_status'] = 'admitted_without_position_requires_per_cohort_reason'
+                elif evaluations:
+                    item['path_status'] = 'evaluated_without_recorded_strategy_admission'
+                elif snapshots:
+                    item['path_status'] = 'snapshot_present_no_evaluation_in_sample'
+                else:
+                    item['path_status'] = 'discovered_no_snapshot'
+            except sqlite3.OperationalError as exc:
+                item['query_error'] = str(exc)
+                item['path_status'] = 'incomplete_query_not_zero_activity'
+        result['local_status'] = 'found' if matches else 'not_in_current_canonical_chain_ids'
+        results.append(result)
+        if time.monotonic() > deadline:
+            break
+    return dict(cutoff_utc=cutoff.isoformat(), finished_at=datetime.now(timezone.utc).isoformat(),
+        definition_version=version, supplied_address_count=len(addresses), audited_address_count=len(results),
+        remaining_addresses=addresses[len(results):], row_limit_per_history=row_limit, cases=results,
+        scope='current_database_active_funding_period_ex_post_not_an_allowlist',
+        limitations=['No Live quote/execution proof; no later price/ATH entry claims.',
+            'Canonical supported chains only; legacy mixed-case/archived ledgers not searched.',
+            'Cohorts are unique opportunity IDs, not statistically independent token samples.',
+            'Invalid EVM lengths are retained with a warning, not silently discarded or repaired.',
+            'Observation gaps use distinct same-pool times; cache freshness beyond stored fields unknown.',
+            'Evaluation coverage is bounded to sampled snapshot IDs; route tags are not risk rejections.'])
+
+
+def markdown(report):
+    lines = ['# 扩展用户地址诊断156', '', '仅当前数据库、当前资金期的只读证据；不是地址白名单或事后买入建议。',
+        '', f"统计截止：{report['cutoff_utc']}；完整输出包含每个 cohort、策略决定及仓位主键。",
+        '', '| 完整地址 / 链 | 快照样本 | 基础评估 | 准入机会 / 臂 | 已开仓机会 / 仓位 | 路径状态 |',
+        '|---|---:|---:|---:|---:|---|']
+    for case in report['cases']:
+        if not case['matches']:
+            lines.append(f"| `{case['address']}` | — | — | — | — | 当前规范化链标识未找到，非全历史未发现结论 |")
+        for item in case['matches']:
+            lines.append(f"| `{item['token']['token_id']}` | {item.get('sampled_snapshot_count','—')} | "
+                f"{item.get('evaluation_sample_count','—')} | {item.get('admitted_unique_cohorts','—')} / "
+                f"{item.get('admitted_arm_decisions','—')} | {item.get('filled_unique_cohorts','—')} / "
+                f"{len(item.get('positions',[]))} | {item['path_status']} |")
+    lines += ['', '## 边界', '', *('- '+x for x in report['limitations']),
+              f"- 未处理地址：{len(report['remaining_addresses'])}；query_error 或 history_truncated 不得解读为完整统计。"]
+    return '\n'.join(lines) + '\n'
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--addresses-file', required=True, type=Path)
+    parser.add_argument('--output-dir', required=True, type=Path)
+    parser.add_argument('--seconds', type=float, default=30)
+    args = parser.parse_args()
+    text = args.addresses_file.read_text(encoding='utf-8-sig')
+    addresses = addresses_from_text(text)
+    config = json.loads((ROOT / 'config.json').read_text(encoding='utf-8-sig'))
+    database = (ROOT / config['database']).resolve()
+    with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True, timeout=.2) as con:
+        con.row_factory = sqlite3.Row
+        con.execute('BEGIN')  # one bounded read snapshot, not mixed live frontiers
+        version = json.loads(con.execute("SELECT value_json FROM kv WHERE key='runtime-loaded-manifest'").fetchone()[0])['definition_version']
+        report = audit(con, addresses, version, seconds=args.seconds)
+    report['objective_sha256'] = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    (args.output_dir / f'cases_{suffix}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    (args.output_dir / f'cases_{suffix}.md').write_text(markdown(report), encoding='utf-8')
+    print(json.dumps(dict(addresses=len(addresses), completed=report['audited_address_count'],
+        matched=sum(bool(x['matches']) for x in report['cases']), output=str(args.output_dir / f'cases_{suffix}.md'))))
