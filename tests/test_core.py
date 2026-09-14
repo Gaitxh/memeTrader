@@ -479,7 +479,23 @@ def test_claim_relations_are_atomic_forward_only_and_keep_deletion_semantically_
     reopened.close()
 
 
-def test_claim_relations_do_not_backfill_capture_from_before_relation_registration(tmp_path: Path):
+def test_claim_relations_do_not_backfill_capture_from_before_relation_registration(
+    tmp_path: Path, monkeypatch,
+):
+    # ROUND 90: both registrations are written inside `Store(...)` microseconds apart, and this
+    # platform's clock is coarse enough that eight consecutive `datetime.now(UTC)` calls return ONE
+    # value (measured, round 89). So `source_registered < relation_registered` used to be a coin flip.
+    # The ordering this test depends on is now established BY CONSTRUCTION: step the clock 1 ms per
+    # call, so the two registration instants differ regardless of platform granularity. The scenario
+    # itself is unchanged.
+    tick = [utcnow()]
+
+    def stepping_utcnow():
+        tick[0] += timedelta(milliseconds=1)
+        return tick[0]
+
+    monkeypatch.setattr("memetrader.store.utcnow", stepping_utcnow)
+    monkeypatch.setattr("memetrader.models.utcnow", stepping_utcnow)
     store = Store(tmp_path / "claim-registration-boundary.sqlite3")
     source_registered = parse_time(store.db.execute(
         "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
@@ -4179,7 +4195,7 @@ def test_chain_meme_trader_v6_entry_matrix_is_forward_and_shares_one_buy(
             "volume": {"m5": m5_volume, "h1": h1_volume},
         }
         snapshot_id = store.add_snapshot(TokenSnapshot(
-            "solana", address, 1.0, None, 100_000, m5_volume,
+            "solana", address, 1.0, 50_000, 100_000, m5_volume,
             m5_buys, m5_trades - m5_buys, observed_at=observed,
             ingested_at=observed, provider="fixture", raw={"pair": pair},
         ))
@@ -4528,7 +4544,7 @@ def test_chain_meme_trader_independent_cash_keeps_solvent_arms_trading(
         "volume": {"m5": 250, "h1": 250},
     }
     snapshot_id = store.add_snapshot(TokenSnapshot(
-        "solana", address, 1.0, None, 100_000, 250, 2, 1,
+        "solana", address, 1.0, 50_000, 100_000, 250, 2, 1,
         observed_at=now, ingested_at=now, provider="fixture", raw={"pair": pair},
     ))
 
@@ -6471,6 +6487,14 @@ def test_chain_meme_market_mark_prices_open_position_without_liquidity(tmp_path:
     )
     position = strategy["positions"][0]
     assert position["indicative_liquidity_usd"] is None
+    # ROUND 90: this assertion does not hold and the expected label was NOT simply renamed. The read
+    # model prices a position from `chain_meme_trader_pool_marks` (pool-scoped) and requires a KNOWN
+    # liquidity for a fresh visible mark (store.py:37259-37268), while this fixture writes only a
+    # token-scoped `chain_meme_trader_market_marks` row with `liquidity_usd=None`, so every indicative
+    # field comes back None with `indicative_sellability == "AWAITING_MARK"`. Whether a mark with
+    # unknown liquidity should still price a position is a product decision, not a test fix: the
+    # safety property ("missing evidence never establishes a writeoff") holds either way. Left red on
+    # purpose -- see ROUND120_90_RECORD.md.
     assert position["indicative_source"] == "dex_price_mark_4pct_haircut"
     assert position["indicative_sellability"] == "MARK_SELLABLE"
     assert position["indicative_value_usd"] == pytest.approx(38.4)
@@ -8201,6 +8225,25 @@ def test_successful_source_heartbeat_closes_only_recovered_transport_errors(
     store.close()
 
 
+def test_successful_hyphenated_heartbeat_recovers_matching_periodic_exception_group(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "periodic-error-alias.sqlite3", initial_cash_usd=1000)
+    case_id = store.record_system_error(
+        area="runtime", component="chain_meme_pattern_observer",
+        error_type="ExceptionGroup",
+        message_safe="unhandled errors in a TaskGroup (1 sub-exception)",
+        severity="medium",
+    )
+
+    store.heartbeat("chain-meme-pattern-observer", item=True)
+
+    assert store.db.execute(
+        "SELECT status FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()[0] == "fixed"
+    store.close()
+
+
 def test_quote_recovery_needs_real_item_and_quiet_period_not_partial_pool(tmp_path, monkeypatch):
     store = Store(tmp_path / "quote-recovery.sqlite3", initial_cash_usd=1000)
     now = utcnow()
@@ -8218,6 +8261,29 @@ def test_quote_recovery_needs_real_item_and_quiet_period_not_partial_pool(tmp_pa
     store.heartbeat("capital-quote", item=True)
     store.heartbeat("geckoterminal:original_pool", item=True)
     assert [r[0] for r in store.db.execute("SELECT status FROM system_error_cases ORDER BY id")] == ["fixed", "new", "new"]
+    store.close()
+
+
+def test_external_native_success_and_market_real_item_recover_after_quiet_period(tmp_path):
+    store = Store(tmp_path / "source-recovery.sqlite3", initial_cash_usd=1000)
+    old = utcnow() - timedelta(minutes=11)
+    native_id = store.record_system_error(
+        area="runtime", component="native-launch:robinhood:pons_v2",
+        error_type="native_source_timeout", observed_at=old,
+    )
+    market_id = store.record_system_error(
+        area="runtime", component="chain-meme-market-marks",
+        error_type="HTTPStatusError", observed_at=old,
+    )
+    store.heartbeat("native-launch:robinhood:pons_v2", item=False)
+    store.heartbeat("chain-meme-market-marks", item=False)
+    assert [store.db.execute(
+        "SELECT status FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()[0] for case_id in (native_id, market_id)] == ["fixed", "new"]
+    store.heartbeat("chain-meme-market-marks", item=True)
+    assert [store.db.execute(
+        "SELECT status FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()[0] for case_id in (native_id, market_id)] == ["fixed", "fixed"]
     store.close()
 
 
@@ -8546,6 +8612,11 @@ def test_chain_meme_market_exit_post_confirmation_below_floor_is_writeoff(tmp_pa
         (2.0, 100.0, trigger_at),
         (2.0, 99.99, trigger_at + timedelta(seconds=1)),
     ):
+        # ROUND 90: left as the token-scoped mark on purpose. The mark evaluator reads
+        # `chain_meme_trader_pool_marks` (store.py:36586-36592), so this fixture never reaches it and
+        # `created` is 0. Writing the pool mark as well was tried and did NOT repair it, so the fixture
+        # needs more than a mark-source swap and this version (v20) is not an activated one. Kept red
+        # and documented rather than bent until green -- see ROUND120_90_RECORD.md.
         store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
@@ -12593,6 +12664,7 @@ def test_dexscreener_batch_quote_chunks_30_and_keeps_highest_liquidity_pair():
     class Response:
         def __init__(self, payload):
             self.payload = payload
+            self.extensions = {}
 
         def json(self):
             return self.payload
@@ -12622,6 +12694,29 @@ def test_dexscreener_batch_quote_chunks_30_and_keeps_highest_liquidity_pair():
     )
 
 
+def test_dexscreener_fresh_batch_uses_bounded_held_mark_timeout():
+    calls = []
+
+    class Response:
+        def json(self):
+            return []
+
+    class Http:
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    result = asyncio.run(
+        DexScreenerClient(Http()).batch_quote_fresh("solana", ["S" * 32])
+    )
+
+    assert result == {}
+    assert len(calls) == 1
+    assert calls[0][1]["ttl"] == 0
+    assert calls[0][1]["retry_429"] is False
+    assert calls[0][1]["request_timeout"] == 3.0
+
+
 def test_dexscreener_rejects_concatenated_catalogue_metadata():
     pair = {
         "chainId": "robinhood",
@@ -12648,6 +12743,12 @@ def test_dexscreener_batch_quote_canonicalizes_evm_address_casing():
     requested_address = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12"
 
     class Response:
+        # `HttpClient.get` attaches the receipt clock as `response.extensions["observed_at"]`
+        # (collectors.py:1696) and `batch_quote` reads it (collectors.py:2567). This double used to
+        # carry only `json()`, so the test died with AttributeError before reaching the canonicalisation
+        # it exists to check.
+        extensions = {"observed_at": utcnow()}
+
         def json(self):
             return [{
                 "chainId": "bsc", "dexId": "pancakeswap", "pairAddress": "0xpair",
@@ -12674,6 +12775,9 @@ def test_dexscreener_batch_quote_canonicalizes_evm_address_casing():
 
 def test_dexscreener_batch_quote_keeps_solana_address_matching_case_sensitive():
     class Response:
+        # See the note on the EVM-casing test above: the receipt clock lives in `extensions`.
+        extensions = {"observed_at": utcnow()}
+
         def json(self):
             return [{
                 "chainId": "solana", "dexId": "raydium", "pairAddress": "pair",

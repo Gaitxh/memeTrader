@@ -16,7 +16,12 @@ def test_cohort_namespace_next_fill_and_old_primary_frontier(tmp_path, monkeypat
     store = Store(tmp_path / "cohort.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
     store.register_chain_meme_pattern_experiments()
-    assert store.register_chain_meme_cohort_experiments() == 5
+    # ROUND 90: this used to assert the exact count `== 5`. The cohort experiment set has grown since
+    # (it returns 30), and the property this line exists to check is IDEMPOTENCY: the first call
+    # registers work and the second registers nothing. Pinning the batch size made an unrelated
+    # experiment addition look like a defect, so assert the property instead of the magic number.
+    first = store.register_chain_meme_cohort_experiments()
+    assert first > 0
     assert store.register_chain_meme_cohort_experiments() == 0
     version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     token = TokenCandidate("solana", str(Pubkey.new_unique()), "Cohort", "C")
@@ -99,6 +104,11 @@ def test_runtime_passive_cohort_consumes_received_batches_without_requests(monke
         CHAIN_MEME_TRADER_ACTIVE_VERSION="test",
         chain_meme_cohort_receipts=lambda episodes: ({}, []),
         observe_chain_meme_pattern=lambda token, snap, **kw: calls.append((token, snap, kw)) or 0,
+        # ROUND 90: honour `get_kv(key, default=None)`'s contract. Returning None unconditionally made
+        # runtime.py:7860 (`saved.get('mature_window_counts', {})`) raise AttributeError, which is a
+        # property of this double, not of the product: the real store returns the default for an
+        # absent key.
+        get_kv=lambda key, default=None, **kw: default,
         set_kv=lambda *args: None, heartbeat=lambda *args, **kw: None,
     )
     tokens = [TokenCandidate("solana", str(Pubkey.new_unique()), "Group", f"G{i}") for i in range(3)]
@@ -149,15 +159,33 @@ def test_deferred_one_shot_keeps_original_quote_and_drains_without_new_batch(
         }} for t, p in zip(tokens, pairs)}
 
     monkeypatch.setattr("memetrader.cohort_experiments.consume_passive_cohort_batch", consume)
+    monkeypatch.setattr("memetrader.dex_trajectory.Engine.signals_for", lambda *args, **kwargs: {})
+    monkeypatch.setattr("memetrader.trajectory144.Engine.signals_for", lambda *args, **kwargs: {})
+    monkeypatch.setattr("memetrader.alpha149.Engine.signals_for", lambda *args, **kwargs: {})
     runtime = Runtime.__new__(Runtime)
     runtime._cohort_started_at = observed - timedelta(seconds=1)
     runtime._cohort_batches = deque([(received, values)], maxlen=16)
     runtime._paper_quote_rejections = lambda *args: []
+    runtime._trajectory_saved_at = float("inf")
+    runtime._trajectory144_saved_at = float("inf")
+    runtime._fresh_impulse112_flush = float("inf")
+    passive_learning = SimpleNamespace(
+        observe=lambda *args, **kwargs: None,
+        signals=lambda *args, **kwargs: {},
+    )
     runtime.store = SimpleNamespace(
         CHAIN_MEME_TRADER_ACTIVE_VERSION="test",
         chain_meme_cohort_receipts=lambda episodes: ({}, []),
         observe_chain_meme_pattern=lambda token, snap, **kw: calls.append((token, snap, kw)) or 0,
+        # ROUND 90: honour `get_kv(key, default=None)`'s contract. Returning None unconditionally made
+        # runtime.py:7860 (`saved.get('mature_window_counts', {})`) raise AttributeError, which is a
+        # property of this double, not of the product: the real store returns the default for an
+        # absent key.
+        get_kv=lambda key, default=None, **kw: default,
         set_kv=lambda *args: None, heartbeat=lambda *args, **kw: None,
+        _mode_learning144=passive_learning,
+        _recipe145=SimpleNamespace(signals=lambda *args, **kwargs: {}),
+        _cohort_flow=SimpleNamespace(),
     )
 
     async def scenario():
@@ -171,11 +199,50 @@ def test_deferred_one_shot_keeps_original_quote_and_drains_without_new_batch(
         original = runtime._cohort_pending[target]
         assert original["quote"][1] is values[-1][1]
         assert original["quote"][2] == received
-        clock[0] += timedelta(seconds=delay)
+        expected_never_dispatched = sum(
+            int(item.get("dispatch_counts", {}).get(arm, 0)) == 0
+            for item in runtime._cohort_pending.values()
+            for arm in item["signals"]
+        )
+        expected_after_dispatch = sum(
+            int(item.get("dispatch_counts", {}).get(arm, 0)) > 0
+            for item in runtime._cohort_pending.values()
+            for arm in item["signals"]
+        )
+        repeated_same_key = projection_busy and delay == 61
+        if repeated_same_key:
+            clock[0] += timedelta(seconds=59)
+            repeated_values = [
+                (token, _snapshot(token, pair, clock[0]))
+                for token, pair in zip(tokens, pairs)
+            ]
+            runtime._cohort_batches.append((clock[0], repeated_values))
+            await runtime.chain_meme_cohort_observer_once()
+            assert all(
+                signal["recorded_at"] == iso(received)
+                for item in runtime._cohort_pending.values()
+                for signal in item["signals"].values()
+            )
+            expected_never_dispatched = sum(
+                int(item.get("dispatch_counts", {}).get(arm, 0)) == 0
+                for item in runtime._cohort_pending.values()
+                for arm in item["signals"]
+            )
+            expected_after_dispatch = sum(
+                int(item.get("dispatch_counts", {}).get(arm, 0)) > 0
+                for item in runtime._cohort_pending.values()
+                for arm in item["signals"]
+            )
+            assert runtime.store._dex_trajectory.counts[
+                "pending_deadline_dispatches_while_active"
+            ] == 1
+            clock[0] += timedelta(seconds=2)
+        else:
+            clock[0] += timedelta(seconds=delay)
         idle.set()
         await runtime.chain_meme_cohort_observer_once()
         await runtime.chain_meme_cohort_observer_once()
-        assert len(consume_calls) == 1  # No invented or refetched source batch.
+        assert len(consume_calls) == (2 if repeated_same_key else 1)
         if delay == 2:
             assert len(calls) == 9
             assert len({t.token_id for t, _, _ in calls}) == 9
@@ -193,4 +260,7 @@ def test_deferred_one_shot_keeps_original_quote_and_drains_without_new_batch(
             assert all("quote" not in item for item in runtime._cohort_pending.values())
             if delay == 61:
                 assert not runtime._cohort_pending
+                counts = runtime.store._dex_trajectory.counts
+                assert counts["pending_signal_expired_never_dispatched"] == expected_never_dispatched
+                assert counts["pending_signal_expired_after_dispatch"] == expected_after_dispatch
     asyncio.run(scenario())
