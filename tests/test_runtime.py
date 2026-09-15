@@ -1554,7 +1554,7 @@ def test_cohort_batch_drains_while_held_market_http_is_in_flight():
     asyncio.run(scenario())
 
 
-def test_growth_followups_reserve_first_hydration_capacity_and_rotate_chains(tmp_path):
+def test_growth_followups_use_capacity_left_after_first_hydrations(tmp_path):
     store = Store(tmp_path / "growth-due.sqlite3")
     now = utcnow()
     for chain in ("bsc", "solana", "robinhood"):
@@ -1570,10 +1570,15 @@ def test_growth_followups_reserve_first_hydration_capacity_and_rotate_chains(tmp
     rotated = store.due_token_detail_hydrations(limit=10, now=now,
         chains=("robinhood", "bsc", "solana"), followup_limit=2)
     assert len(first) == len(rotated) == 10
-    assert sum(r["status"] == "pending" for r in first) == 8
-    assert [r["token_id"] for r in first if r["status"] == "hydrated"] == [
-        "bsc:growth-bsc-0", "solana:growth-solana-0"]
-    assert [r["chain"] for r in rotated if r["status"] == "hydrated"] == ["robinhood", "bsc"]
+    assert all(r["status"] == "pending" for r in first)
+    assert all(r["status"] == "pending" for r in rotated)
+    with_spare = store.due_token_detail_hydrations(
+        limit=12, now=now, chains=("bsc", "solana", "robinhood"), followup_limit=2,
+    )
+    assert sum(r["status"] == "pending" for r in with_spare) == 10
+    assert [r["token_id"] for r in with_spare if r["status"] == "hydrated"] == [
+        "bsc:growth-bsc-0", "solana:growth-solana-0",
+    ]
     assert all(r["status"] == "pending" for r in store.due_token_detail_hydrations(limit=10, now=now))
     store.mark_token_detail_hydration("bsc:growth-bsc-0", "no_pair", now=now)
     retry_at = now + timedelta(minutes=6)
@@ -3353,7 +3358,7 @@ def test_new_solana_tokens_enter_durable_batch_hydration_and_missing_pair_retrie
 
 @pytest.mark.parametrize("status", ["no_pair", "error", "hydrated"])
 @pytest.mark.parametrize("fresh_link", [False, True])
-def test_new_discovery_link_wakes_only_later_no_pair_attempt(tmp_path, status, fresh_link):
+def test_new_discovery_link_wakes_later_retryable_attempt(tmp_path, status, fresh_link):
     async def scenario():
         runtime = Runtime.__new__(Runtime)
         runtime.store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
@@ -3373,13 +3378,14 @@ def test_new_discovery_link_wakes_only_later_no_pair_attempt(tmp_path, status, f
             provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana")
         await runtime._persist_dex_discovery_links(round_id, [link], {"solana"}, observed_at=at + timedelta(seconds=20))
         row = runtime.store.token_detail_hydration(token.token_id)
-        if fresh_link and status == "no_pair":
+        if fresh_link and status in {"no_pair", "error"}:
             assert row["status"] == "pending" and row["attempts"] == original["attempts"]
             assert row["next_attempt_at"] == iso(at + timedelta(seconds=20))
             # Another cached source received after the attempt must not revive it.
-            runtime.store.mark_token_detail_hydration(token.token_id, "no_pair", now=at + timedelta(seconds=30))
-            assert not runtime.store.requeue_token_detail_hydration(token.token_id,
-                enqueued_at=at + timedelta(seconds=20), no_pair_only=True)
+            if status == "no_pair":
+                runtime.store.mark_token_detail_hydration(token.token_id, "no_pair", now=at + timedelta(seconds=30))
+                assert not runtime.store.requeue_token_detail_hydration(token.token_id,
+                    enqueued_at=at + timedelta(seconds=20), no_pair_only=True)
         else:
             assert dict(row) == original
         runtime.store.close()

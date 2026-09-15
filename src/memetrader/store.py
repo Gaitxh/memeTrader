@@ -9751,6 +9751,31 @@ class Store:
             )
             return True
 
+    def promote_token_detail_hydration_from_discovery(self, token_id: str, *, observed_at=None) -> bool:
+        """Let a newer discovery receipt retry a previously unavailable token immediately."""
+        received = parse_time(observed_at or utcnow())
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT status,last_attempt_at FROM token_detail_hydration WHERE token_id=?",
+                (str(token_id),),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] not in {"no_pair", "error"}
+                or row["last_attempt_at"] is not None
+                and parse_time(row["last_attempt_at"]) >= received
+            ):
+                return False
+            self.db.execute(
+                """
+                UPDATE token_detail_hydration
+                SET status='pending',enqueued_at=?,next_attempt_at=?,last_error='',followup_until=NULL
+                WHERE token_id=?
+                """,
+                (iso(received), iso(received), str(token_id)),
+            )
+            return True
+
     def rediscovery_funnel_hit(self, token_id, stage, at=None):
         funnel = getattr(self, '_rediscovery_funnel', None)
         if funnel is not None:
@@ -9857,7 +9882,7 @@ class Store:
             # Protect rows near their final lifecycle deadline, then service
             # the oldest scheduled frame. Ordering every non-urgent row by
             # followup_until let new short-horizon rows indefinitely starve
-            # already-due valid pools whose six-hour deadline was later.
+            # already-due valid pools whose lifecycle deadline was later.
             urgent_at = iso(parse_time(due_at) + timedelta(minutes=15))
             watched_order = (
                 f"CASE WHEN token_id IN ({','.join('?' for _ in watched)}) "
@@ -9917,7 +9942,10 @@ class Store:
                 ) THEN 0 ELSE 1 END,
             """
             priority_params += priority_patterns
-        available = max(0, min(300, int(limit)) - len(followups))
+        # First quotes are the shared input to every strategy. They consume the
+        # batch before lifecycle research; follow-ups only fill otherwise idle
+        # addresses in the same request budget.
+        available = max(0, min(300, int(limit)))
         base_sql = f"""
             SELECT * FROM token_detail_hydration
             WHERE status IN ('pending','no_pair','error')
@@ -9977,7 +10005,8 @@ class Store:
                     if str(row["token_id"]) not in selected_ids
                 )
                 selected = selected[:available]
-            return selected + followups
+            spare = max(0, min(300, int(limit)) - len(selected))
+            return selected + followups[:spare]
 
     def mark_token_detail_hydration(
         self,
@@ -10043,7 +10072,7 @@ class Store:
                     # A first missing quote may be a transient provider/pair
                     # visibility gap, so retain the five-minute confirmation.
                     # Repeating that probe every five minutes for the rest of
-                    # a six-hour lifecycle consumed most follow-up capacity
+                    # the lifecycle consumed most follow-up capacity
                     # without new evidence. Consecutive no-pair results back
                     # off while remaining eligible for strictly fresh frames.
                     retry_minutes = (

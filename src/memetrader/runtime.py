@@ -197,7 +197,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": True,
             "chains": ["solana"],
             "surface_chains": ["solana"],
-            "interval_seconds": 90,
+            "interval_seconds": 30,
             "max_items_per_surface": 40,
             "max_hydrations_per_cycle": 180,
             "active_token_minutes": 180,
@@ -3195,20 +3195,31 @@ class Runtime:
                 max_hydrations - 1,
                 max(1, int(max_hydrations * followup_share)),
             )
-        due = self.store.due_token_detail_hydrations(
-            limit=max_hydrations,
-            chains=tuple(hydration_chains) if self.chain_meme_trader_only else (),
-            followup_limit=followup_limit,
-            prefer_fresh=self.chain_meme_trader_only,
-            priority_token_ids=tuple(x["token_id"] for x in self._pregrad_watch.ranked(now=utcnow()))
-                if getattr(self, "_pregrad_watch", None) else (),
-            priority_social_account_urls=(
+        due_kwargs = {
+            "limit": max_hydrations,
+            "followup_limit": followup_limit,
+            "prefer_fresh": self.chain_meme_trader_only,
+            "priority_token_ids": tuple(
+                x["token_id"] for x in self._pregrad_watch.ranked(now=utcnow())
+            ) if getattr(self, "_pregrad_watch", None) else (),
+            "priority_social_account_urls": (
                 () if self.chain_meme_trader_only else (
                     str(account.get("url") or "")
                     for account in self.autonomous_search._configured_high_impact_accounts()
                 )
             ),
-        )
+        }
+        if self.chain_meme_trader_only:
+            # The API accepts 30 addresses per chain. A global 30-row selection
+            # followed by a chain split produced mostly tiny requests and left
+            # the free batch capacity idle.
+            due = []
+            for chain in hydration_chains:
+                due.extend(self.store.due_token_detail_hydrations(
+                    **due_kwargs, chains=(chain,),
+                ))
+        else:
+            due = self.store.due_token_detail_hydrations(**due_kwargs, chains=())
         if not due:
             return
         by_chain: dict[str, list[Any]] = {}
@@ -3374,6 +3385,11 @@ class Runtime:
                     self.store.mark_token_detail_hydration(token_id, "hydrated",
                         **self._shared_market_followup_schedule(token, snapshot))
                     self._chain_meme_decision_wakeup().set()
+                    # A valid shared quote is immediately available to every
+                    # strategy. Strategies that need multi-frame trajectories
+                    # can keep waiting for them; broad/fast strategies do not
+                    # enter a second observation queue before seeing this frame.
+                    self._remember_pattern_quotes({token_id: (token, snapshot)})
                     self.store.add_token_discovery_exposure(
                         round_id,
                         token_id=token_id,
@@ -3547,8 +3563,8 @@ class Runtime:
                 first["chain"], first["address"], enqueued_at=observed_at,
             )
             if new_links:
-                self.store.requeue_token_detail_hydration(
-                    token_id, enqueued_at=observed_at, no_pair_only=True,
+                self.store.promote_token_detail_hydration_from_discovery(
+                    token_id, observed_at=observed_at,
                 )
             if known_before:
                 self.store.requeue_dormant_source_episode(token_id,
@@ -10123,13 +10139,17 @@ class Runtime:
                   if self.config.get('optimization151', {}).get('review_enabled', True) else []),
                 asyncio.create_task(self._periodic('narrative_hold_v2', 15, self.narrative_hold.once), name='narrative_hold_v2'),
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
-                *(asyncio.create_task(self.dex_discovery_stream_loop(surface),
-                                     name=f"dexscreener_{surface}_stream")
-                  for surface in ("token_profiles", "profile_updates", "community_takeovers", "boosts_latest")),
                 asyncio.create_task(
                     self._periodic(
                         "multichain_meme_data",
-                        (self.config["sources"].get("multichain_meme_data") or {}).get("interval_seconds", 90),
+                        min(
+                            float((self.config["sources"].get("multichain_meme_data") or {}).get(
+                                "interval_seconds", 90,
+                            )),
+                            float((self.config["sources"].get("dexscreener_discovery") or {}).get(
+                                "interval_seconds", 30,
+                            )),
+                        ),
                         self.poll_multichain_meme_data_once,
                     ),
                     name="multichain_meme_data",
