@@ -1435,6 +1435,7 @@ class Runtime:
                     # exit pair. Only these new Paper arms may use the causal DEX
                     # approximation when optional security APIs yield no usable fact.
                     self.store.register_chain_meme_righttail_recovery152_experiments()
+                    self.store.register_chain_meme_tempo_matrix162()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
@@ -9961,6 +9962,7 @@ class Runtime:
                    'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
+                   'tempo_matrix162.py',
                    'collectors.py','followup_resources.py','held_flap_recovery.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],

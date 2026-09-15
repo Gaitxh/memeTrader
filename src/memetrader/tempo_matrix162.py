@@ -1,0 +1,113 @@
+"""Strictly-forward entry/exit tempo pairs for two mature alpha149 signals."""
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Mapping
+
+
+VERSION = "tempo-matrix162/v1"
+
+EXPERIMENTS: dict[str, dict[str, Any]] = {
+    "alpha149_df_mature_price_up_fast5_pair_v2": {
+        "parent": "alpha149_df_mature_price_up_fast_v1",
+        "name": "Mature two-frame paired 5-minute horizon",
+        "max_hold_minutes": 5.0,
+    },
+    "alpha149_df_mature_price_up_fast5_control_v1": {
+        "parent": "alpha149_df_mature_price_up_fast_v1",
+        "name": "Mature two-frame entry with fresh 5-minute control",
+        "max_hold_minutes": 5.0,
+    },
+    "alpha149_df_mature_price_up_hold90_v1": {
+        "parent": "alpha149_df_mature_price_up_fast_v1",
+        "name": "Mature two-frame entry with 90-minute horizon",
+        "max_hold_minutes": 90.0,
+    },
+    "alpha149_df_mature_price_up_hold90_pair_v2": {
+        "parent": "alpha149_df_mature_price_up_fast_v1",
+        "name": "Mature two-frame paired 90-minute horizon",
+        "max_hold_minutes": 90.0,
+    },
+    "alpha149_mature_two_step_fast5_v1": {
+        "parent": "alpha149_mature_two_step_slow_v1",
+        "name": "Mature three-frame entry with 5-minute horizon",
+        "max_hold_minutes": 5.0,
+    },
+    "alpha149_mature_two_step_slow90_control_v1": {
+        "parent": "alpha149_mature_two_step_slow_v1",
+        "name": "Mature three-frame entry with fresh 90-minute control",
+        "max_hold_minutes": 90.0,
+    },
+}
+
+PAIRS = (
+    (
+        "alpha149_df_mature_price_up_fast5_pair_v2",
+        "alpha149_df_mature_price_up_hold90_pair_v2",
+    ),
+    (
+        "alpha149_mature_two_step_fast5_v1",
+        "alpha149_mature_two_step_slow90_control_v1",
+    ),
+)
+
+
+def install() -> None:
+    """Teach the existing alpha149 engine the fresh paired arm mappings."""
+    from . import alpha149
+
+    for arm, spec in EXPERIMENTS.items():
+        parent = str(spec["parent"])
+        kind = alpha149.SPECS[parent][0]
+        alpha149.SPECS[arm] = (kind, str(spec["name"]), int(spec["max_hold_minutes"]))
+        override = deepcopy(alpha149.OVERRIDES.get(parent) or {})
+        override.update(
+            max_hold_minutes=float(spec["max_hold_minutes"]),
+            description=(
+                f"{VERSION}: same point-in-time entry signal and exit contract as {parent}; "
+                f"fresh-account paired horizon={float(spec['max_hold_minutes']):g} minutes."
+            ),
+        )
+        alpha149.OVERRIDES[arm] = override
+    alpha149.ALL_ARMS = tuple(alpha149.SPECS) + tuple(alpha149.EXIT_ARMS)
+    alpha149.KINDS = tuple(kind for kind, _, _ in alpha149.SPECS.values())
+
+
+def policy(parent: Mapping[str, Any], arm: str) -> dict[str, Any]:
+    """Clone a registered parent while changing only identity and hold horizon."""
+    spec = EXPERIMENTS[arm]
+    result = deepcopy(dict(parent))
+    result.update(
+        arm_id=arm,
+        canonical_id=arm,
+        name=str(spec["name"]),
+        entry_family=arm,
+        max_hold_minutes=float(spec["max_hold_minutes"]),
+        description=(
+            f"{VERSION}: same point-in-time entry predicate, notional, stop and trailing "
+            f"contract as {spec['parent']}; fresh paired horizon is "
+            f"{float(spec['max_hold_minutes']):g} minutes."
+        ),
+    )
+    result["entry_filter"] = {
+        **(result.get("entry_filter") or {}), "direction": arm,
+    }
+    result.pop("behavior_contract_hash", None)
+    result.pop("forward_activation_snapshot_id", None)
+    result.pop("forward_started_at", None)
+    result.pop("runtime_addition_id", None)
+    result.pop("stage", None)
+    return result
+
+
+def snapshot() -> dict[str, Any]:
+    return {
+        "version": VERSION,
+        "arms": list(EXPERIMENTS),
+        "parents": {arm: spec["parent"] for arm, spec in EXPERIMENTS.items()},
+        "pairs": [list(pair) for pair in PAIRS],
+        "changed_dimension": "max_hold_minutes_only",
+        "effects": "paper_only",
+        "extra_requests": 0,
+        "no_historical_backfill": True,
+    }

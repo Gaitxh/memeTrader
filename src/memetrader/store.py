@@ -26890,6 +26890,35 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_tempo_matrix162(self) -> int:
+        """Append fresh same-signal Paper pairs that isolate maximum hold time."""
+        from . import tempo_matrix162
+
+        tempo_matrix162.install()
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for arm, spec in tempo_matrix162.EXPERIMENTS.items():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?", (version, arm),
+                ).fetchone() is not None:
+                    continue
+                parent = self.db.execute(
+                    "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?",
+                    (version, str(spec["parent"])),
+                ).fetchone()
+                if parent is None:
+                    continue
+                self.append_chain_meme_trader_policy(
+                    tempo_matrix162.policy(self._json_object(parent["policy_json"]), arm),
+                    activated_at=at,
+                )
+                added += 1
+        return added
+
     def register_chain_meme_runup_floor_experiments(self) -> int:
         """Append the RUNUP-FLOOR150 entry arms at their own frontier.
 
