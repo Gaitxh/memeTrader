@@ -85,7 +85,7 @@ from .models import (
     parse_time,
     utcnow,
 )
-from .store import Store
+from .store import CURVE_STAGE_DEX_IDS, Store
 from .strategy import (
     AgentRouter,
     CandidateEvaluator,
@@ -3046,10 +3046,55 @@ class Runtime:
         except (TypeError, ValueError, OverflowError, OSError):
             return {}
         floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
-        if born > snapshot.observed_at or snapshot.liquidity_usd < floor:
+        if born > snapshot.observed_at:
             return {}
-        next_at = max(now + timedelta(seconds=60), born + timedelta(seconds=901))
+        age_seconds = max(0.0, (snapshot.observed_at - born).total_seconds())
         until = born + timedelta(hours=6)
+        dex_id = str(pair.get("dexId") or "").lower()
+        txns = pair.get("txns") if isinstance(pair.get("txns"), Mapping) else {}
+        m5 = txns.get("m5") if isinstance(txns.get("m5"), Mapping) else {}
+        try:
+            m5_trades = int(m5.get("buys") or 0) + int(m5.get("sells") or 0)
+            price = float(snapshot.price_usd or 0.0)
+            liquidity = float(snapshot.liquidity_usd or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        curve_stage = (
+            dex_id in CURVE_STAGE_DEX_IDS
+            and (price <= 0.0 or not math.isfinite(liquidity) or liquidity < floor)
+        )
+        if curve_stage:
+            # Curve identities are not entry evidence, but an active curve can
+            # graduate into a new AMM between discovery surface polls. Reuse
+            # the existing bounded follow-up batch only when current activity
+            # is non-trivial. This is a prefilter, never permission to trade a
+            # missing price or missing-liquidity surface.
+            if m5_trades < 3 or age_seconds >= 6 * 60 * 60:
+                return {}
+            refresh_seconds = 5 * 60 if age_seconds < 90 * 60 else 15 * 60
+            next_at = now + timedelta(seconds=refresh_seconds)
+            return (
+                {"refresh_at": next_at, "followup_until": until}
+                if next_at < until else {}
+            )
+        if not math.isfinite(liquidity) or liquidity < floor:
+            return {}
+        # Keep the high-information early window at one minute, then taper
+        # ordinary observations as their marginal value falls.  A flat 60s
+        # cadence for every token created a demand of ~3.6k follow-ups/minute
+        # against a bounded capacity below 350/minute, making the queue
+        # mathematically impossible to drain.  The tiers preserve continued
+        # observation without increasing provider load or starving exits.
+        if age_seconds < 30 * 60:
+            refresh_seconds = 60
+        elif age_seconds < 90 * 60:
+            refresh_seconds = 5 * 60
+        else:
+            refresh_seconds = 15 * 60
+        next_at = max(
+            now + timedelta(seconds=refresh_seconds),
+            born + timedelta(seconds=901),
+        )
         return {"refresh_at": next_at, "followup_until": until} if next_at < until else {}
 
     async def poll_dexscreener_discovery_once(
