@@ -27099,6 +27099,38 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_core_portfolio183(self) -> int:
+        """Append the compact shared-entry fast/runner pair at a fresh frontier."""
+        from .core_portfolio183 import ARMS, PARENT_ARM, policies
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            parent = next(
+                (policy for policy in definition["policies"]
+                 if str(policy.get("arm_id") or "") == PARENT_ARM),
+                None,
+            )
+            if parent is None:
+                return 0
+            at = utcnow()
+            added = 0
+            for policy in policies(parent):
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?",
+                    (version, policy["arm_id"]),
+                ).fetchone() is not None:
+                    continue
+                self.append_chain_meme_trader_policy(policy, activated_at=at)
+                added += 1
+            return added
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162

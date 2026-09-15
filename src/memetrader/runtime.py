@@ -1451,6 +1451,7 @@ class Runtime:
                     # exit pair. Only these new Paper arms may use the causal DEX
                     # approximation when optional security APIs yield no usable fact.
                     self.store.register_chain_meme_righttail_recovery152_experiments()
+                    self.store.register_chain_meme_core_portfolio183()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
