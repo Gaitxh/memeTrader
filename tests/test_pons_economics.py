@@ -99,6 +99,34 @@ def test_every_launch_enrolled_busy_rotation_restart_and_expiry():
     assert q.counts['launch']==6 and q.counts['attempted']==1
 
 
+def test_native_quote_backlog_does_not_block_one_network_eligible_attempt():
+    from memetrader.pons_economics import NATIVE_QUOTE, PonsEconomicsEnrollment
+    now=datetime.now(timezone.utc)
+    q=PonsEconomicsEnrollment()
+    for i in range(5):
+        q.enroll(dict(curve=hex(i+1),token=hex(i+10),pair_token=NATIVE_QUOTE),now)
+    q.enroll(dict(curve='0x20',token='0x30',pair_token='0x'+'1'*40),now)
+    class Observer:
+        calls=0
+        async def observe(self,event,busy):
+            self.calls+=1
+            return dict(status='UNKNOWN',reason='proof_missing',recorded_at=now.isoformat())
+    observer=Observer()
+
+    assert asyncio.run(q.step(observer,lambda:True,now+timedelta(seconds=120))) == []
+    assert len(q.pending)==6 and observer.calls==0
+    assert q.counts['locally_terminalized']==0
+
+    results=asyncio.run(q.step(observer,lambda:False,now+timedelta(seconds=150)))
+
+    assert len(results)==6 and not q.pending
+    assert observer.calls==q.counts['attempted']==1
+    assert q.counts['locally_terminalized']==5
+    assert [row['result']['reason'] for row in results[:5]] == [
+        'UNSUPPORTED_QUOTE_NATIVE_ETH_USD_NOT_PROVEN'
+    ] * 5
+
+
 def test_enrollment_bound_is_explicit_not_silent():
     from memetrader.pons_economics import PonsEconomicsEnrollment
     q=PonsEconomicsEnrollment();now=datetime.now(timezone.utc)

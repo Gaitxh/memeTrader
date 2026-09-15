@@ -20,6 +20,30 @@ SELECTORS = {'token': 'fc0c546a', 'pair': '3de35b79', 'factory': 'c45a0155',
              'snipe': 'd7e1ef39' + RECIPIENT[2:].zfill(64),
              'ready': 'c68360a5', 'graduated': 'e7c2b772',
              'real': '4f1f58fd', 'reserves': '0902f1ac'}
+NATIVE_QUOTE = '0x' + '0' * 40
+MAX_LOCAL_TERMINALS_PER_STEP = 32
+
+
+def local_unsupported_quote(event: dict[str, Any], recorded_at: str) -> dict[str, Any] | None:
+    """Return a zero-request terminal result for the known unsupported native quote."""
+    if str(event.get('pair_token') or '').lower() != NATIVE_QUOTE:
+        return None
+    return {
+        'status': 'UNKNOWN',
+        'reason': 'UNSUPPORTED_QUOTE_NATIVE_ETH_USD_NOT_PROVEN',
+        'quote_class': 'NATIVE_ETH_UNPROVEN',
+        'decision_eligible': False,
+        'affects': 'none',
+        'recipient': RECIPIENT,
+        'recipient_semantics': 'hypothetical_only',
+        'requested_at': recorded_at,
+        'recorded_at': recorded_at,
+        'token': event.get('token'),
+        'curve': event.get('curve'),
+        'quote_asset': event.get('pair_token'),
+        'source_sha256': SOURCE_SHA256,
+        'source_hash_semantics': 'expected_verified_curve_model_source_not_factory_proof',
+    }
 
 
 class PonsEconomicsEnrollment:
@@ -53,22 +77,36 @@ class PonsEconomicsEnrollment:
             row=self.pending.pop(0);row['status']='EXPIRED_UNATTEMPTED'
             self.counts[row['status']]+=1;results.append(row)
         if self.pending:
-            row=self.pending[0]
             if busy():
+                row=self.pending[0]
                 row['status']='DEFERRED_BUSY'
                 self.counts['busy_rotations']+=1
             else:
-                self.counts['attempted']+=1
-                try:
-                    value=await asyncio.wait_for(observer.observe(row['event'],busy),timeout=4)
-                except asyncio.TimeoutError:
-                    value=dict(status='UNKNOWN',reason='shadow_budget_timeout',recorded_at=stamp())
-                if value.get('reason')=='held_priority_deferred':
-                    row['status']='DEFERRED_BUSY';self.counts['busy_rotations']+=1
-                else:
+                recorded_at = now.isoformat()
+                local_count = 0
+                while self.pending and local_count < MAX_LOCAL_TERMINALS_PER_STEP:
+                    row = self.pending[0]
+                    value = local_unsupported_quote(row['event'], recorded_at)
+                    if value is None:
+                        break
                     self.pending.pop(0);row.update(status=value['status'],result=value,
                         attempt_delay_seconds=(now-datetime.fromisoformat(row['enrolled_at'])).total_seconds())
                     self.counts[value['status']]+=1;results.append(row)
+                    self.counts['locally_terminalized'] += 1
+                    local_count += 1
+                if self.pending:
+                    row=self.pending[0]
+                    self.counts['attempted']+=1
+                    try:
+                        value=await asyncio.wait_for(observer.observe(row['event'],busy),timeout=4)
+                    except asyncio.TimeoutError:
+                        value=dict(status='UNKNOWN',reason='shadow_budget_timeout',recorded_at=stamp())
+                    if value.get('reason')=='held_priority_deferred':
+                        row['status']='DEFERRED_BUSY';self.counts['busy_rotations']+=1
+                    else:
+                        self.pending.pop(0);row.update(status=value['status'],result=value,
+                            attempt_delay_seconds=(now-datetime.fromisoformat(row['enrolled_at'])).total_seconds())
+                        self.counts[value['status']]+=1;results.append(row)
         self.recent=(self.recent+results)[-32:]
         return results
 
@@ -163,10 +201,11 @@ class PonsEconomicsObserver:
                 raise ValueError('launch_identity_invalid')
             if busy():
                 raise ValueError('held_priority_deferred')
+            local_result = local_unsupported_quote(event, stamp())
+            if local_result is not None:
+                return {**result, **local_result}
             curve, pair = event['curve'].lower(), event['pair_token'].lower()
             result['quote_class'] = 'NATIVE_ETH_UNPROVEN' if int(pair,16)==0 else 'ERC20_UNVERIFIED'
-            if int(pair,16)==0:
-                raise ValueError('UNSUPPORTED_QUOTE_NATIVE_ETH_USD_NOT_PROVEN')
             verified = self.verified_cache.get(curve)
             if verified is None:
                 response = await self.http.get(f'https://robinhoodchain.blockscout.com/api/v2/smart-contracts/{curve}', ttl=0)
