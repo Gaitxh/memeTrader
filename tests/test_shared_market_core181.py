@@ -6,7 +6,7 @@ from memetrader.runtime import Runtime, initial_config
 from memetrader.store import Store
 
 
-def test_first_quotes_fill_capacity_before_followups(tmp_path):
+def test_valid_lifecycle_followups_reserve_capacity_without_wasting_spare(tmp_path):
     store = Store(tmp_path / "first-before-refresh.sqlite3")
     now = utcnow()
     for index in range(3):
@@ -23,13 +23,14 @@ def test_first_quotes_fill_capacity_before_followups(tmp_path):
     full = store.due_token_detail_hydrations(
         limit=4, now=now, chains=("solana",), followup_limit=3, prefer_fresh=True,
     )
-    assert [row["status"] for row in full] == ["pending"] * 4
+    assert [row["status"] for row in full].count("pending") == 1
+    assert [row["status"] for row in full].count("hydrated") == 3
 
     with_spare = store.due_token_detail_hydrations(
         limit=6, now=now, chains=("solana",), followup_limit=3, prefer_fresh=True,
     )
-    assert [row["status"] for row in with_spare].count("pending") == 4
-    assert [row["status"] for row in with_spare].count("hydrated") == 2
+    assert [row["status"] for row in with_spare].count("pending") == 3
+    assert [row["status"] for row in with_spare].count("hydrated") == 3
     store.close()
 
 

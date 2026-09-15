@@ -9863,6 +9863,7 @@ class Store:
         prefer_fresh: bool = False,
         priority_token_ids: Iterable[str] = (),
         followup_limit: int = 0,
+        followup_retry_limit: int = 2,
         retry_limit: int = 3,
     ) -> list[sqlite3.Row]:
         due_at = iso(parse_time(now or utcnow()))
@@ -9877,8 +9878,10 @@ class Store:
                 f" AND LOWER(chain) IN ({','.join('?' for _ in selected_chains)})"
             )
             chain_params = selected_chains
-        followups = []
+        valid_followups = []
+        lifecycle_retries = []
         followup_limit = min(300, max(0, int(followup_limit)), max(0, int(limit)))
+        followup_retry_limit = min(30, max(0, int(followup_retry_limit)))
         if followup_limit:
             # Protect rows near their final lifecycle deadline, then service
             # the oldest scheduled frame. Ordering every non-urgent row by
@@ -9889,9 +9892,13 @@ class Store:
                 f"CASE WHEN token_id IN ({','.join('?' for _ in watched)}) "
                 "THEN 0 ELSE 1 END," if watched else ""
             )
-            with self._lock:
-                followups = list(self.db.execute(
-                    "SELECT * FROM token_detail_hydration WHERE status IN ('hydrated','no_pair','error') "
+            def fetch_followups(statuses: tuple[str, ...], row_limit: int) -> list[sqlite3.Row]:
+                if row_limit <= 0:
+                    return []
+                return list(self.db.execute(
+                    "SELECT * FROM token_detail_hydration WHERE status IN ("
+                    + ",".join("?" for _ in statuses)
+                    + ") "
                     "AND followup_until>? AND next_attempt_at IS NOT NULL AND next_attempt_at<=? "
                     + chain_filter
                     + f" ORDER BY {watched_order}"
@@ -9899,10 +9906,16 @@ class Store:
                       "CASE WHEN followup_until<=? THEN followup_until END,"
                       "next_attempt_at,followup_until,enqueued_at LIMIT ?",
                     (
-                        due_at, due_at, *chain_params, *watched,
-                        urgent_at, urgent_at, followup_limit,
+                        *statuses, due_at, due_at, *chain_params, *watched,
+                        urgent_at, urgent_at, row_limit,
                     ),
                 ))
+
+            with self._lock:
+                valid_followups = fetch_followups(("hydrated",), followup_limit)
+                lifecycle_retries = fetch_followups(
+                    ("no_pair", "error"), followup_retry_limit,
+                )
         priority_patterns = tuple(
             dict.fromkeys(
                 f"{str(url).strip().rstrip('/').lower()}/%"
@@ -9948,6 +9961,8 @@ class Store:
         # every batch after the fresh queue drains.
         available = max(0, min(300, int(limit)))
         retry_limit = min(30, max(0, int(retry_limit)))
+        reserved_followups = valid_followups[:available]
+        pending_available = max(0, available - len(reserved_followups))
         base_sql = f"""
             SELECT * FROM token_detail_hydration
             WHERE status IN ({{statuses}})
@@ -9984,13 +9999,13 @@ class Store:
             ))
 
         with self._lock:
-            if not prefer_fresh or available < 5:
+            if not prefer_fresh or pending_available < 5:
                 age_order = (
                     "COALESCE((SELECT first_seen_at FROM tokens AS token "
                     "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC"
                     if prefer_fresh else "enqueued_at ASC"
                 )
-                selected = fetch(("pending",), age_order, available)
+                selected = fetch(("pending",), age_order, pending_available)
             else:
                 # A pure newest-first queue permanently starves an old backlog
                 # whenever discovery arrival exceeds hydration throughput. Keep
@@ -9998,8 +10013,8 @@ class Store:
                 # reserve 20% for deterministic oldest-first drainage. Priority
                 # migrations and exact social handoffs retain precedence in both
                 # lanes; de-duplication prevents them consuming two slots.
-                oldest_quota = max(1, available // 5)
-                fresh_quota = available - oldest_quota
+                oldest_quota = max(1, pending_available // 5)
+                fresh_quota = pending_available - oldest_quota
                 selected = fetch(
                     ("pending",),
                     "COALESCE((SELECT first_seen_at FROM tokens AS token "
@@ -10015,9 +10030,10 @@ class Store:
                     row for row in oldest_candidates
                     if str(row["token_id"]) not in selected_ids
                 )
-                selected = selected[:available]
+                selected = selected[:pending_available]
+            selected.extend(reserved_followups)
             spare = max(0, available - len(selected))
-            selected.extend(followups[:spare])
+            selected.extend(lifecycle_retries[:spare])
             spare = max(0, available - len(selected))
             retries = fetch(
                 ("no_pair", "error"), "next_attempt_at,enqueued_at", min(spare, retry_limit),
