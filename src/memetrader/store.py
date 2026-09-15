@@ -9854,24 +9854,29 @@ class Store:
         followups = []
         followup_limit = min(300, max(0, int(followup_limit)), max(0, int(limit)))
         if followup_limit:
-            # Existing due index; per-chain oldest-first rotation keeps an
-            # active chain from consuming every growth-stage observation.
+            # Protect rows near their final lifecycle deadline, then service
+            # the oldest scheduled frame. Ordering every non-urgent row by
+            # followup_until let new short-horizon rows indefinitely starve
+            # already-due valid pools whose six-hour deadline was later.
+            urgent_at = iso(parse_time(due_at) + timedelta(minutes=15))
+            watched_order = (
+                f"CASE WHEN token_id IN ({','.join('?' for _ in watched)}) "
+                "THEN 0 ELSE 1 END," if watched else ""
+            )
             with self._lock:
-                groups = [list(self.db.execute(
+                followups = list(self.db.execute(
                     "SELECT * FROM token_detail_hydration WHERE status IN ('hydrated','no_pair','error') "
                     "AND followup_until>? AND next_attempt_at IS NOT NULL AND next_attempt_at<=? "
-                    + ("AND chain=? " if chain else "")
-                    + (f"ORDER BY CASE WHEN token_id IN ({','.join('?' for _ in watched)}) "
-                       "THEN 0 ELSE 1 END,followup_until,next_attempt_at,enqueued_at LIMIT ?"
-                       if watched else
-                       "ORDER BY followup_until,next_attempt_at,enqueued_at LIMIT ?"),
-                    ((due_at, due_at, chain, *watched, followup_limit) if chain else
-                     (due_at, due_at, *watched, followup_limit)),
-                )) for chain in (selected_chains or (None,))]
-            for offset in range(followup_limit):
-                for group in groups:
-                    if offset < len(group) and len(followups) < followup_limit:
-                        followups.append(group[offset])
+                    + chain_filter
+                    + f" ORDER BY {watched_order}"
+                      "CASE WHEN followup_until<=? THEN 0 ELSE 1 END,"
+                      "CASE WHEN followup_until<=? THEN followup_until END,"
+                      "next_attempt_at,followup_until,enqueued_at LIMIT ?",
+                    (
+                        due_at, due_at, *chain_params, *watched,
+                        urgent_at, urgent_at, followup_limit,
+                    ),
+                ))
         priority_patterns = tuple(
             dict.fromkeys(
                 f"{str(url).strip().rstrip('/').lower()}/%"
@@ -9990,7 +9995,7 @@ class Store:
         with self._lock, self.db:
             row = self.db.execute(
                 """
-                SELECT attempts,followup_until,
+                SELECT status,attempts,followup_until,
                        EXISTS(
                            SELECT 1 FROM token_launch_facts AS fact
                            WHERE fact.token_id=token_detail_hydration.token_id
@@ -10035,7 +10040,18 @@ class Store:
             if deadline is not None:
                 deadline = iso(parse_time(deadline))
                 if status != "hydrated":
-                    next_attempt_at = iso(attempted_at + timedelta(minutes=5))
+                    # A first missing quote may be a transient provider/pair
+                    # visibility gap, so retain the five-minute confirmation.
+                    # Repeating that probe every five minutes for the rest of
+                    # a six-hour lifecycle consumed most follow-up capacity
+                    # without new evidence. Consecutive no-pair results back
+                    # off while remaining eligible for strictly fresh frames.
+                    retry_minutes = (
+                        15 if status == "no_pair" and row["status"] == "no_pair" else 5
+                    )
+                    next_attempt_at = iso(
+                        attempted_at + timedelta(minutes=retry_minutes)
+                    )
                 if next_attempt_at is not None and next_attempt_at >= deadline:
                     next_attempt_at = None
             self.db.execute(
