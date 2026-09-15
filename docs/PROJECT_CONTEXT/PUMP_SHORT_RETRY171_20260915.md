@@ -45,3 +45,17 @@ separately from the ordinary retry. Keep only if short-probe success is at least
 10%, no lifecycle follow-up expiry/failure appears, held/SELL latency does not
 regress materially, and HTTP request frequency is unchanged. This is a funnel
 latency experiment, not evidence of strategy profitability.
+
+## Initial natural receipt
+
+The first post-deployment slice produced 15 mature short probes. All 15 changed
+from `quote_returned_no_pair` to a persisted DEX snapshot. Probe delay was
+`p50 99.1s`, `p95 127.1s`; launch receipt to snapshot was `p50 107.2s`,
+`p95 136.3s`, compared with the pre-change `p50 312.9s`, `p95 345.7s`.
+Hydration completed with zero component failures in this slice.
+
+This is strong initial latency evidence but not the full guard. Held retrieval
+experienced concurrent upstream failures and `p95 5.77s` duration during the
+short slice, so causality and stability remain unresolved until the specified
+30-minute comparable window. No additional capacity or strategy change is
+authorized by this early result.
