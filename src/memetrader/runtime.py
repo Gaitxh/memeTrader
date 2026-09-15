@@ -5181,12 +5181,25 @@ class Runtime:
         )
         self.store.heartbeat("autonomous-context-retry", item=True)
 
-    async def token_universe_followup_once(self) -> None:
+    async def token_universe_followup_once(
+        self,
+        *,
+        finalize_limit: int | None = None,
+        universe_limit: int = 180,
+        onchain_limit: int = 60,
+    ) -> None:
         """Actively quote only due full-universe forward checkpoints."""
-        self.store.finalize_token_universe_forward_outcomes()
+        if finalize_limit is None:
+            self.store.finalize_token_universe_forward_outcomes()
+        else:
+            self.store.finalize_token_universe_forward_outcomes(limit=finalize_limit)
         self.store.finalize_onchain_only_shadow_gaps()
-        due = self.store.due_token_universe_quotes(limit=180)
-        due.extend(self.store.due_onchain_only_shadow_quotes(limit=60))
+        due = (
+            self.store.due_token_universe_quotes(limit=universe_limit)
+            if universe_limit > 0 else []
+        )
+        if onchain_limit > 0:
+            due.extend(self.store.due_onchain_only_shadow_quotes(limit=onchain_limit))
         due.sort(key=lambda item: (
             parse_time(item["deadline_at"]), parse_time(item["queue_due_at"]),
             str(item.get("lane") or "universe"), int(item["cohort_id"]), str(item["role"]),
@@ -5320,7 +5333,10 @@ class Runtime:
                 returned_count=len(quoted),
                 duplicate_token_count=max(0, len(chunk) - len(quoted)),
             )
-        self.store.finalize_token_universe_forward_outcomes()
+        if finalize_limit is None:
+            self.store.finalize_token_universe_forward_outcomes()
+        else:
+            self.store.finalize_token_universe_forward_outcomes(limit=finalize_limit)
         self.store.finalize_onchain_only_shadow_gaps()
 
     async def token_universe_jupiter_quote_once(
@@ -6154,7 +6170,7 @@ class Runtime:
         return targets
 
     async def chain_meme_universe_outcomes_once(self) -> None:
-        """Low-priority bounded research reads; never request market data."""
+        """Advance admitted and full-universe outcomes under bounded low priority."""
         await self._chain_meme_active_idle().wait()
         # Shared SQLite writer stays on the event-loop thread: worker queries
         # invoking Python SQL functions can invert the GIL/SQLite mutex order.
@@ -6170,6 +6186,15 @@ class Runtime:
             await asyncio.sleep(0)
             await self._chain_meme_active_idle().wait()
             self.store.update_chain_opportunity_regimes(self._chain_outcome_version)
+        await self.token_universe_followup_once(
+            finalize_limit=16,
+            universe_limit=0,
+            onchain_limit=0,
+        )
+        self.store.finalize_token_universe_outcome_quality()
+        self.store.finalize_token_universe_fixed_target_execution()
+        self.store.finalize_missed_opportunity_audits()
+        self.store.finalize_missed_opportunity_no_decision_attributions()
         self.store.heartbeat("chain_universe_outcomes", item=bool(
             enrolled["targets_enrolled"] or finalized["observed"] or finalized["unknown"]))
 

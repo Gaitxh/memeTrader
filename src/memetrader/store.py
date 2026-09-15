@@ -20053,21 +20053,26 @@ class Store:
                 return action, candidate, paper_bought
         return "NONE", candidate, paper_bought
 
-    def finalize_token_universe_forward_outcomes(self, *, now: Any = None) -> dict[str, int]:
+    def finalize_token_universe_forward_outcomes(
+        self, *, now: Any = None, limit: int | None = None,
+    ) -> dict[str, int]:
         """Append immutable full-universe baselines and fixed-horizon outcomes."""
         evaluated = parse_time(now or utcnow())
+        bounded_limit = None if limit is None else max(1, int(limit))
         baseline_observed = baseline_missing = outcomes_observed = outcomes_missing = 0
         with self._lock, self.db:
-            cohorts = list(
-                self.db.execute(
-                    """
+            query = """
                     SELECT c.* FROM token_universe_forward_cohorts c
                     WHERE (SELECT COUNT(*) FROM token_universe_forward_outcomes o
                            WHERE o.cohort_id=c.id) < ?
                     ORDER BY c.discovery_recorded_at,c.id
-                    """,
-                    (len(self.TOKEN_UNIVERSE_HORIZONS_MINUTES),),
-                )
+                    """
+            params: tuple[Any, ...] = (len(self.TOKEN_UNIVERSE_HORIZONS_MINUTES),)
+            if bounded_limit is not None:
+                query += " LIMIT ?"
+                params += (bounded_limit,)
+            cohorts = list(
+                self.db.execute(query, params)
             )
             for cohort in cohorts:
                 baseline = self.db.execute(
