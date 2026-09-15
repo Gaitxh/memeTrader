@@ -50,6 +50,20 @@ def test_policy_changes_only_identity_and_principal_recovery_contract():
     assert "forward_started_at" not in policy
 
 
+def test_fresh_control_changes_identity_but_preserves_every_parent_exit_field():
+    parent = _parent()
+    control = goldendog_recovery164.policy(parent, goldendog_recovery164.CONTROL_ARM)
+
+    assert control["entry_filter"]["direction"] == goldendog_recovery164.CONTROL_ARM
+    assert "dynamic_principal_recovery" not in control
+    assert "minimum_principal_recovery_multiple" not in control
+    for field in (
+        "hard_stop_return", "hard_stop_grace_seconds", "hard_stop_confirm_marks",
+        "trailing_activate_return", "trailing_drawdown", "max_hold_minutes",
+    ):
+        assert control[field] == parent[field]
+
+
 def test_install_reuses_the_exact_parent_signal_and_exit_shape():
     goldendog_recovery164.install()
     arm = goldendog_recovery164.ARM
@@ -60,6 +74,8 @@ def test_install_reuses_the_exact_parent_signal_and_exit_shape():
         "trailing_activate_return", "trailing_drawdown",
     ):
         assert alpha149.OVERRIDES[arm][field] == alpha149.OVERRIDES[parent][field]
+        assert alpha149.OVERRIDES[goldendog_recovery164.CONTROL_ARM][field] == \
+            alpha149.OVERRIDES[parent][field]
 
 
 def test_recovery_waits_for_1_20x_net_value_then_sells_the_minimum_amount():
@@ -92,15 +108,21 @@ def test_registration_appends_once_at_its_own_frontier(tmp_path):
     try:
         store.activate_chain_meme_trader_funded_period()
         store.append_chain_meme_trader_policy(_parent())
-        assert store.register_chain_meme_goldendog_recovery164() == 1
+        assert store.register_chain_meme_goldendog_recovery164() == 2
         assert store.register_chain_meme_goldendog_recovery164() == 0
-        row = store.db.execute(
-            "SELECT policy_json,activated_at FROM chain_meme_trader_policy_additions "
-            "WHERE definition_version=? AND arm_id=?",
-            (store.CHAIN_MEME_TRADER_ACTIVE_VERSION, goldendog_recovery164.ARM),
-        ).fetchone()
-        assert row is not None and row["activated_at"]
-        policy = store._json_object(row["policy_json"])
-        assert policy["minimum_principal_recovery_multiple"] == 1.20
+        rows = store.db.execute(
+            "SELECT arm_id,policy_json,activated_at FROM chain_meme_trader_policy_additions "
+            "WHERE definition_version=? AND arm_id IN (?,?) ORDER BY arm_id",
+            (store.CHAIN_MEME_TRADER_ACTIVE_VERSION, *goldendog_recovery164.ARMS),
+        ).fetchall()
+        assert len(rows) == 2
+        assert len({row["activated_at"] for row in rows}) == 1
+        policies = {row["arm_id"]: store._json_object(row["policy_json"]) for row in rows}
+        assert policies[goldendog_recovery164.ARM][
+            "minimum_principal_recovery_multiple"
+        ] == 1.20
+        assert "dynamic_principal_recovery" not in policies[
+            goldendog_recovery164.CONTROL_ARM
+        ]
     finally:
         store.close()
