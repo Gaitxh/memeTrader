@@ -106,6 +106,20 @@ from .strategy import (
 )
 
 
+def _native_launch_observer_schedule(
+    four_rest: Any,
+    pons_v2: Any,
+    launchlab: Any,
+) -> list[Any]:
+    """Keep five native turns while giving one productive Pons frontier two slots."""
+    return [four_rest, pons_v2, four_rest, pons_v2, launchlab]
+
+
+def _native_launch_drains_pons_economics(observer_index: int) -> bool:
+    """Preserve the original once-per-five-turn economics cadence."""
+    return observer_index == 1
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "paper",
     "onchain_primary_focus_enabled": False,
@@ -1572,13 +1586,16 @@ class Runtime:
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
-        from .pons_observer import PonsV1Observer, PonsV2Observer
+        from .pons_observer import PonsV2Observer
         from .four_meme_rest import FourMemeRestObserver
         from .launchlab_observer import LaunchLabObserver
         four_rest = FourMemeRestObserver(self.http)
-        self._native_launch_observers = [four_rest, PonsV2Observer(self.evm_route, self.http),
-                                         four_rest, PonsV1Observer(self.evm_route),
-                                         LaunchLabObserver(self.http)]
+        pons_v2 = PonsV2Observer(self.evm_route, self.http)
+        self._native_launch_observers = _native_launch_observer_schedule(
+            four_rest,
+            pons_v2,
+            LaunchLabObserver(self.http),
+        )
         self._native_launch_cursor = 0
         from .pons_economics import PonsEconomicsObserver, PonsEconomicsEnrollment
         self._pons_economics = PonsEconomicsObserver(self.evm_route, self.http)
@@ -6772,10 +6789,15 @@ class Runtime:
         from .pons_observer import PonsV2Observer
         # Drain only on the existing Pons V2 turn: no increase in start cadence.
         observers = self._native_launch_observers
-        observer = observers[getattr(self, '_native_launch_cursor', 0) % len(observers)]
+        observer_index = getattr(self, '_native_launch_cursor', 0) % len(observers)
+        observer = observers[observer_index]
         await self._chain_meme_native_launch_observe_once()
         queue = getattr(self, '_pons_economics_enrollment', None)
-        if queue is not None and isinstance(observer, PonsV2Observer):
+        # Slot 3 reuses Pons V2 only for discovery. Keeping economics on slot 1
+        # preserves its prior cadence and the held-position resource boundary.
+        if (queue is not None
+                and _native_launch_drains_pons_economics(observer_index)
+                and isinstance(observer, PonsV2Observer)):
             busy = lambda: (self._critical_onchain_exit_event.is_set()
                 or self._evm_route_quote_lock.locked() or not self._chain_meme_active_idle().is_set())
             results = await queue.step(self._pons_economics, busy, utcnow())

@@ -1,8 +1,27 @@
 import asyncio
 from types import SimpleNamespace
 
-from memetrader.runtime import Runtime
+from memetrader.runtime import (
+    Runtime,
+    _native_launch_drains_pons_economics,
+    _native_launch_observer_schedule,
+)
 from memetrader.models import iso, utcnow
+
+
+def test_native_launch_schedule_reuses_one_productive_pons_frontier():
+    four_rest = object()
+    pons_v2 = object()
+    launchlab = object()
+
+    schedule = _native_launch_observer_schedule(four_rest, pons_v2, launchlab)
+
+    assert schedule == [four_rest, pons_v2, four_rest, pons_v2, launchlab]
+    assert schedule[1] is schedule[3]
+    assert [
+        index for index in range(len(schedule))
+        if _native_launch_drains_pons_economics(index)
+    ] == [1]
 
 
 def test_official_sources_rotate_without_new_hot_path_calls():
