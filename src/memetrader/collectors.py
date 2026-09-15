@@ -2682,7 +2682,7 @@ class DexScreenerClient:
         if surface not in self.DISCOVERY_SURFACES:
             raise ValueError(f"unknown DexScreener discovery surface: {surface}")
         path, role = self.DISCOVERY_SURFACES[surface]
-        response = await self.http.get(f"{self.BASE}{path}", ttl=45)
+        response = await self.http.get(f"{self.BASE}{path}", ttl=30)
         payload = response.json()
         return self.discovery_links(surface, payload, allowed_chains, limit=limit)
 
