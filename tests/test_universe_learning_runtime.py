@@ -82,6 +82,9 @@ def test_chain_only_outcome_loop_restores_bounded_full_universe_followup(tmp_pat
         runtime.store.finalize_missed_opportunity_audits = (
             lambda: calls.append("missed")
         )
+        runtime.store.finalize_missed_opportunity_quality_adjudications = (
+            lambda: calls.append("adjudication")
+        )
         runtime.store.finalize_missed_opportunity_no_decision_attributions = (
             lambda: calls.append("attribution")
         )
@@ -98,7 +101,7 @@ def test_chain_only_outcome_loop_restores_bounded_full_universe_followup(tmp_pat
                 "universe_limit": 0,
                 "onchain_limit": 0,
             }),
-            "quality", "execution", "missed", "attribution",
+            "quality", "execution", "missed", "adjudication", "attribution",
         ]
         await runtime.close()
 

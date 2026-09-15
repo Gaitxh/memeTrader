@@ -4907,6 +4907,7 @@ class Runtime:
         self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
+        self.store.finalize_missed_opportunity_quality_adjudications()
         self.store.finalize_missed_opportunity_no_decision_attributions()
 
     async def _liquidity_survival_target_once(self, target: dict[str, Any]) -> None:
@@ -6194,6 +6195,7 @@ class Runtime:
         self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
+        self.store.finalize_missed_opportunity_quality_adjudications()
         self.store.finalize_missed_opportunity_no_decision_attributions()
         self.store.heartbeat("chain_universe_outcomes", item=bool(
             enrolled["targets_enrolled"] or finalized["observed"] or finalized["unknown"]))

@@ -527,6 +527,7 @@ def test_followup_tick_finalizes_event_and_token_context_with_legacy_quote_lane(
         runtime.store.finalize_token_universe_outcome_quality = lambda: calls.append("outcome_quality")
         runtime.store.finalize_token_universe_fixed_target_execution = lambda: calls.append("fixed_execution")
         runtime.store.finalize_missed_opportunity_audits = lambda: calls.append("missed_opportunity")
+        runtime.store.finalize_missed_opportunity_quality_adjudications = lambda: calls.append("miss_quality")
         runtime.store.finalize_missed_opportunity_no_decision_attributions = lambda: calls.append("no_decision_attribution")
         async def universe():
             calls.append("token_universe")
@@ -539,7 +540,7 @@ def test_followup_tick_finalizes_event_and_token_context_with_legacy_quote_lane(
         assert calls == [
             "event", "token_context", "information_first", "information_first_ilg",
             "token_universe", "jupiter_quote", "outcome_quality", "fixed_execution",
-            "missed_opportunity", "no_decision_attribution",
+            "missed_opportunity", "miss_quality", "no_decision_attribution",
         ]
         await runtime.close()
 

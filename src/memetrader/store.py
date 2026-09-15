@@ -202,6 +202,9 @@ class Store:
     CHAIN_MEME_UNIVERSE_OUTCOME_HORIZONS_MINUTES = (0, 15, 60, 240)
     CHAIN_MEME_UNIVERSE_OUTCOME_FRESH_SECONDS = 30
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
+    MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION = (
+        "missed-opportunity-quality-adjudication/v1"
+    )
     MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION = "missed-opportunity-no-decision-attribution/v1"
     TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
     TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION = "token-universe-fixed-target-execution/v1"
@@ -4663,6 +4666,84 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS missed_opportunity_audits_no_delete
                 BEFORE DELETE ON missed_opportunity_audits
                 BEGIN SELECT RAISE(ABORT,'missed-opportunity audits are immutable'); END;
+                CREATE TABLE IF NOT EXISTS missed_opportunity_quality_adjudication_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_audit_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS missed_opportunity_quality_adjudications (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    audit_id INTEGER NOT NULL UNIQUE,
+                    outcome_id INTEGER NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'confirmed_executable_miss','estimated_only_unconfirmed',
+                        'excluded_quality'
+                    )),
+                    reason_code TEXT NOT NULL,
+                    quality_status TEXT NOT NULL,
+                    tradability_status TEXT NOT NULL,
+                    estimated_net_return_after_costs REAL,
+                    net_executable_return_after_costs REAL,
+                    learnable_potential_miss INTEGER NOT NULL DEFAULT 0
+                        CHECK(learnable_potential_miss IN (0,1)),
+                    adjudicated_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(audit_id) REFERENCES missed_opportunity_audits(id),
+                    FOREIGN KEY(outcome_id) REFERENCES token_universe_forward_outcomes(id),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS missed_opportunity_quality_adjudications_status_idx
+                    ON missed_opportunity_quality_adjudications(status,reason_code,horizon_minutes);
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_quality_adjudication_registrations_no_update
+                BEFORE UPDATE ON missed_opportunity_quality_adjudication_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity quality registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_quality_adjudication_registrations_no_delete
+                BEFORE DELETE ON missed_opportunity_quality_adjudication_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity quality registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_quality_adjudications_no_update
+                BEFORE UPDATE ON missed_opportunity_quality_adjudications
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity quality adjudications are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_quality_adjudications_no_delete
+                BEFORE DELETE ON missed_opportunity_quality_adjudications
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity quality adjudications are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_quality_adjudications_validate
+                BEFORE INSERT ON missed_opportunity_quality_adjudications
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM missed_opportunity_quality_adjudication_registrations r
+                    JOIN missed_opportunity_audits a ON a.id=NEW.audit_id
+                    JOIN token_universe_outcome_quality q ON q.outcome_id=a.outcome_id
+                    WHERE r.definition_version=NEW.definition_version
+                      AND a.id>r.activation_audit_id
+                      AND a.definition_version='missed-opportunity-audit/v1'
+                      AND a.audit_class='potential_miss'
+                      AND q.definition_version='token-universe-outcome-quality/v1'
+                      AND NEW.outcome_id=a.outcome_id
+                      AND NEW.cohort_id=a.cohort_id
+                      AND NEW.token_id=a.token_id
+                      AND NEW.horizon_minutes=a.horizon_minutes
+                      AND NEW.quality_status=q.quality_status
+                      AND NEW.tradability_status=q.tradability_status
+                      AND NEW.estimated_net_return_after_costs IS q.estimated_net_return_after_costs
+                      AND NEW.net_executable_return_after_costs IS q.net_executable_return_after_costs
+                      AND (
+                        (NEW.learnable_potential_miss=1
+                         AND NEW.status='confirmed_executable_miss'
+                         AND q.quality_status='same_route_liquidity_supported'
+                         AND q.tradability_status='confirmed_executable'
+                         AND q.net_executable_return_after_costs>=0.25)
+                        OR
+                        (NEW.learnable_potential_miss=0
+                         AND NEW.status IN ('estimated_only_unconfirmed','excluded_quality'))
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid missed-opportunity quality adjudication'); END;
                 CREATE TABLE IF NOT EXISTS missed_opportunity_no_decision_attribution_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -7094,6 +7175,16 @@ class Store:
                     self.MISSED_OPPORTUNITY_AUDIT_VERSION,
                     iso(),
                     self._json(self._missed_opportunity_audit_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO missed_opportunity_quality_adjudication_registrations("
+                "definition_version,registered_at,activation_audit_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM missed_opportunity_audits),0),?)",
+                (
+                    self.MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION,
+                    iso(),
+                    self._json(self._missed_opportunity_quality_adjudication_definition()),
                 ),
             )
             self.db.execute(
@@ -19330,6 +19421,28 @@ class Store:
                 "no_entry_snapshot", "no_outcome_snapshot", "no_decision", "wait",
                 "reject", "candidate_no_paper_buy", "paper_bought",
             ],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    @classmethod
+    def _missed_opportunity_quality_adjudication_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION,
+            "source": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "quality_source": cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+            "cohort": "new_raw_potential_miss_audits_after_registration",
+            "no_historical_backfill": True,
+            "learnable_rule": (
+                "same_route_liquidity_supported_and_confirmed_executable_"
+                "net_return_gte_25pct"
+            ),
+            "estimated_only_rule": (
+                "same_route_liquidity_supported_and_estimated_net_return_gte_25pct_"
+                "with_execution_or_safety_unconfirmed"
+            ),
+            "raw_audit_remains_complete_denominator": True,
+            "unknown_is_not_safe": True,
             "decision_eligible": False,
             "affects": "none",
         }
@@ -45139,6 +45252,90 @@ class Store:
                 inserted += 1
         return {"inserted": inserted, "potential_misses": potential_misses}
 
+    def finalize_missed_opportunity_quality_adjudications(self) -> dict[str, int]:
+        """Separate raw sampled-path misses from evidence safe enough to learn from."""
+        result = {"inserted": 0, "learnable": 0, "estimated_only": 0, "excluded": 0}
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM missed_opportunity_quality_adjudication_registrations "
+                "WHERE definition_version=?",
+                (self.MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return result
+            rows = self.db.execute(
+                """
+                SELECT a.*,q.quality_status,q.tradability_status,
+                       q.estimated_net_return_after_costs,
+                       q.net_executable_return_after_costs
+                FROM missed_opportunity_audits a
+                JOIN token_universe_outcome_quality q
+                  ON q.outcome_id=a.outcome_id AND q.definition_version=?
+                LEFT JOIN missed_opportunity_quality_adjudications j ON j.audit_id=a.id
+                WHERE a.id>? AND a.definition_version=?
+                  AND a.audit_class='potential_miss' AND j.id IS NULL
+                ORDER BY a.id
+                """,
+                (
+                    self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+                    int(registration["activation_audit_id"]),
+                    self.MISSED_OPPORTUNITY_AUDIT_VERSION,
+                ),
+            ).fetchall()
+            for row in rows:
+                quality = str(row["quality_status"] or "unknown")
+                tradability = str(row["tradability_status"] or "unknown")
+                estimated = row["estimated_net_return_after_costs"]
+                executable = row["net_executable_return_after_costs"]
+                supported = quality == "same_route_liquidity_supported"
+                if (
+                    supported
+                    and tradability == "confirmed_executable"
+                    and executable is not None
+                    and float(executable) >= 0.25
+                ):
+                    status = "confirmed_executable_miss"
+                    reason = "confirmed_net_return_gte_25pct"
+                    learnable = 1
+                    result["learnable"] += 1
+                elif supported and estimated is not None and float(estimated) >= 0.25:
+                    status = "estimated_only_unconfirmed"
+                    reason = "estimated_net_positive_but_execution_or_safety_unconfirmed"
+                    learnable = 0
+                    result["estimated_only"] += 1
+                else:
+                    status = "excluded_quality"
+                    if quality == "cross_pair_incomparable":
+                        reason = "cross_pair_incomparable"
+                    elif quality == "same_route_below_liquidity_floor":
+                        reason = "below_liquidity_floor"
+                    elif quality == "invalid_or_non_executable":
+                        reason = "known_non_executable"
+                    elif not supported:
+                        reason = quality
+                    else:
+                        reason = "net_return_below_25pct"
+                    learnable = 0
+                    result["excluded"] += 1
+                self.db.execute(
+                    """
+                    INSERT INTO missed_opportunity_quality_adjudications(
+                        definition_version,audit_id,outcome_id,cohort_id,token_id,
+                        horizon_minutes,status,reason_code,quality_status,tradability_status,
+                        estimated_net_return_after_costs,net_executable_return_after_costs,
+                        learnable_potential_miss,adjudicated_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        self.MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION,
+                        int(row["id"]), int(row["outcome_id"]), int(row["cohort_id"]),
+                        str(row["token_id"]), int(row["horizon_minutes"]), status, reason,
+                        quality, tradability, estimated, executable, learnable, iso(),
+                    ),
+                )
+                result["inserted"] += 1
+        return result
+
     def finalize_missed_opportunity_no_decision_attributions(self) -> dict[str, int]:
         """Freeze target-time-bounded funnel evidence for new no-decision potential misses."""
         inserted = 0
@@ -45606,6 +45803,92 @@ class Store:
         }
 
     @classmethod
+    def missed_opportunity_quality_adjudication_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        version = cls.MISSED_OPPORTUNITY_QUALITY_ADJUDICATION_VERSION
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "missed_opportunity_quality_adjudication_registrations",
+            "missed_opportunity_quality_adjudications",
+        }
+        empty = {
+            "status": "not_registered", "version": version,
+            "summary": {
+                "adjudicated": 0, "learnable_potential_misses": 0,
+                "estimated_only_unconfirmed": 0, "excluded_quality": 0,
+            },
+            "statuses": [], "reasons": [], "recent_learnable": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM missed_opportunity_quality_adjudication_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        row = connection.execute(
+            """
+            SELECT COUNT(*) adjudicated,
+                   SUM(learnable_potential_miss) learnable,
+                   SUM(status='estimated_only_unconfirmed') estimated_only,
+                   SUM(status='excluded_quality') excluded
+            FROM missed_opportunity_quality_adjudications WHERE definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        grouped = lambda column: [
+            {column: str(item[column]), "count": int(item["count"] or 0)}
+            for item in connection.execute(
+                f"SELECT {column},COUNT(*) count FROM "
+                "missed_opportunity_quality_adjudications WHERE definition_version=? "
+                f"GROUP BY {column} ORDER BY count DESC,{column}",
+                (version,),
+            )
+        ]
+        recent = [
+            {
+                "token_id": str(item["token_id"]),
+                "horizon_minutes": int(item["horizon_minutes"]),
+                "net_executable_return_after_costs": float(
+                    item["net_executable_return_after_costs"]
+                ),
+                "reason_code": str(item["reason_code"]),
+            }
+            for item in connection.execute(
+                """
+                SELECT token_id,horizon_minutes,net_executable_return_after_costs,reason_code
+                FROM missed_opportunity_quality_adjudications
+                WHERE definition_version=? AND learnable_potential_miss=1
+                ORDER BY adjudicated_at DESC,id DESC LIMIT ?
+                """,
+                (version, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        total = int(row["adjudicated"] or 0)
+        return {
+            "status": "collecting" if total else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_audit_id": int(registration["activation_audit_id"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "summary": {
+                "adjudicated": total,
+                "learnable_potential_misses": int(row["learnable"] or 0),
+                "estimated_only_unconfirmed": int(row["estimated_only"] or 0),
+                "excluded_quality": int(row["excluded"] or 0),
+            },
+            "statuses": grouped("status"), "reasons": grouped("reason_code"),
+            "recent_learnable": recent,
+            "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    @classmethod
     def missed_opportunity_audit_summary_from_connection(
         cls,
         connection: sqlite3.Connection,
@@ -45619,11 +45902,17 @@ class Store:
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
+        quality_adjudication = (
+            cls.missed_opportunity_quality_adjudication_summary_from_connection(
+                connection, recent_limit=recent_limit,
+            )
+        )
         empty = {
             "status": "not_observed", "version": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
             "definition": cls._missed_opportunity_audit_definition(),
             "summary": {"audited_outcomes": 0, "potential_misses": 0},
             "horizons": [], "breakpoints": [], "classes": [], "recent_potential_misses": [],
+            "quality_adjudication": quality_adjudication,
             "decision_eligible": False, "affects": "none",
         }
         if not required.issubset(tables):
@@ -45714,6 +46003,7 @@ class Store:
             "breakpoints": grouped("funnel_breakpoint"),
             "classes": grouped("audit_class"),
             "recent_potential_misses": recent,
+            "quality_adjudication": quality_adjudication,
             "decision_eligible": False,
             "affects": "none",
             "as_of": iso(),
