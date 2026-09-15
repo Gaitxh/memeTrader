@@ -551,6 +551,13 @@ def _goplus_tax_pct(value: Any, default: float | None = None) -> float | None:
     return number * 100 if number <= 1 else number
 
 
+EVM_EXECUTION_CHAINS = frozenset({"ethereum", "eth", "bsc", "base", "robinhood"})
+
+
+def is_evm_execution_chain(chain: Any) -> bool:
+    return str(chain or "").lower() in EVM_EXECUTION_CHAINS
+
+
 class SafetyChecker:
     PRETRADE_RUG_SAFETY_VERSION = "pretrade_rug_safety/v3-pumpswap-raydium-cpmm-rpc-custody"
     EXECUTION_ROUTE_OBSERVATION_VERSION = "execution-route-observation/v1-jupiter-order"
@@ -1071,7 +1078,7 @@ class SafetyChecker:
         return snap
 
     async def enrich_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
-        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base", "robinhood"}:
+        if not is_evm_execution_chain(snap.chain):
             return snap
         snap = await self._enrich_goplus_evm(snap)
         if self.config.get("require_evm_simulation", False) or "goplus_evm" not in snap.raw:
@@ -1080,7 +1087,7 @@ class SafetyChecker:
 
     async def enrich_evm_execution_fields(self, snap: TokenSnapshot) -> TokenSnapshot:
         """Collect forward EVM tax/sellability evidence for execution research."""
-        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base", "robinhood"}:
+        if not is_evm_execution_chain(snap.chain):
             return snap
         snap = await self._enrich_goplus_evm(snap)
         if snap.chain.lower() == "bsc":

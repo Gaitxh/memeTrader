@@ -97,6 +97,7 @@ from .strategy import (
     extract_addresses,
     is_context_searchable_token_name,
     is_distinctive_token_name,
+    is_evm_execution_chain,
     is_promotional_market_content,
     replay_guard,
     sanitize_source_entity_id,
@@ -3290,7 +3291,7 @@ class Runtime:
                     is_candidate_chain = snapshot.chain.lower() in candidate_chains
                     if (
                         is_candidate_chain
-                        and snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                        and is_evm_execution_chain(snapshot.chain)
                         and momentum >= float(
                             self.config["autonomous_search"].get("context_min_momentum_score", 75)
                         )
@@ -3897,7 +3898,7 @@ class Runtime:
                 ),
             )
             if (
-                snap.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                is_evm_execution_chain(snap.chain)
                 and momentum >= float(
                     self.config["autonomous_search"].get("context_min_momentum_score", 75)
                 )
@@ -5291,7 +5292,7 @@ class Runtime:
                     ),
                 )
                 if (
-                    snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                    is_evm_execution_chain(snapshot.chain)
                     and snapshot.liquidity_usd is not None
                     and float(snapshot.liquidity_usd) >= required_liquidity
                 ):

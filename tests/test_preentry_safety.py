@@ -215,3 +215,13 @@ def test_robinhood_enrichment_uses_existing_goplus_endpoint():
     assert len(calls)==1 and calls[0][0].endswith('/token_security/4663')
     assert calls[0][1]=={'params':{'contract_addresses':snap.address},'ttl':60}
     assert snap.raw['goplus_evm']=={'cannot_sell':'0'}
+
+
+@pytest.mark.parametrize(
+    "chain, expected",
+    [("bsc", True), ("Robinhood", True), ("base", True), ("solana", False), (None, False)],
+)
+def test_evm_execution_chain_capability_is_shared(chain, expected):
+    from memetrader.strategy import is_evm_execution_chain
+
+    assert is_evm_execution_chain(chain) is expected

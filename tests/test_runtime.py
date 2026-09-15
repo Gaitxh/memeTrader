@@ -2056,19 +2056,20 @@ def test_runtime_background_jupiter_releases_quote_lock_between_requests(tmp_pat
     asyncio.run(scenario())
 
 
-def test_token_universe_followup_collects_forward_evm_execution_safety(tmp_path):
+@pytest.mark.parametrize("chain", ["bsc", "robinhood"])
+def test_token_universe_followup_collects_forward_evm_execution_safety(tmp_path, chain):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
         config["bridge"]["enabled"] = False
         runtime = Runtime(config, tmp_path)
         token = TokenCandidate(
-            chain="bsc", address="0x" + "a" * 40,
-            name="Forward EVM Safety", symbol="FES", source="geckoterminal:bsc",
+            chain=chain, address="0x" + "a" * 40,
+            name="Forward EVM Safety", symbol="FES", source=f"geckoterminal:{chain}",
         )
         runtime.store.upsert_token(token)
         round_id = runtime.store.start_token_discovery_round(
-            provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="bsc",
+            provider="geckoterminal", surface="new_pools", mode="poll", chain_scope=chain,
         )
         runtime.store.add_token_discovery_exposure(
             round_id, token_id=token.token_id, chain=token.chain, role="new_pool",
@@ -2077,14 +2078,14 @@ def test_token_universe_followup_collects_forward_evm_execution_safety(tmp_path)
         runtime.store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
 
         async def batch_quote(chain, addresses):
-            assert chain == "bsc" and addresses == [token.address]
+            assert chain == token.chain and addresses == [token.address]
             snapshot = TokenSnapshot(
-                chain="bsc", address=token.address, price_usd=0.01,
+                chain=token.chain, address=token.address, price_usd=0.01,
                 liquidity_usd=20_000, market_cap_usd=100_000,
                 volume_5m_usd=5_000, buys_5m=20, sells_5m=5,
                 observed_at=utcnow(), provider="dexscreener",
                 raw={"pair": {
-                    "chainId": "bsc", "dexId": "pancakeswap",
+                    "chainId": token.chain, "dexId": "pancakeswap",
                     "pairAddress": "0x" + "b" * 40,
                     "baseToken": {"address": token.address},
                     "quoteToken": {"address": "0x" + "c" * 40},

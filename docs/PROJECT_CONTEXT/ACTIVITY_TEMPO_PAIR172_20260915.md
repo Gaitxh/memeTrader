@@ -61,3 +61,14 @@ token cannot masquerade as broad evidence. A 5-minute advantage would support
 active mature scalp behavior; a 90-minute advantage would support slower
 right-tail capture. If neither survives costs, retire the pair rather than
 adding threshold variants.
+
+## Initial natural receipt
+
+Within six minutes of activation the pair opened cohort `34406` on the same
+Solana token, timestamp, snapshot and execution price. The execution snapshot
+had 299 buys, 9 sells and about `1.127M U` liquidity. The funded-period contract
+used the ordinary `20U` Paper buy for each arm. The 5-minute arm closed at its
+time limit for `-1.22U`; the 90-minute arm remained open at that observation.
+Two more strict paired cohorts opened by `13:38Z`. These receipts prove
+reachability and pairing, not profitability; no conclusion is permitted from
+one closed member or three tokens.
