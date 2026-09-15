@@ -197,7 +197,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": True,
             "chains": ["solana"],
             "surface_chains": ["solana"],
-            "interval_seconds": 30,
+            "interval_seconds": 15,
             "max_items_per_surface": 40,
             "max_hydrations_per_cycle": 180,
             "active_token_minutes": 180,
@@ -640,8 +640,8 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             )
         dex_discovery["surface_chains"] = surface_chains
         interval = float(dex_discovery.get("interval_seconds", 90))
-        if not 30 <= interval <= 3600:
-            raise ValueError("sources.dexscreener_discovery.interval_seconds must be between 30 and 3600")
+        if not 15 <= interval <= 3600:
+            raise ValueError("sources.dexscreener_discovery.interval_seconds must be between 15 and 3600")
         max_items = int(dex_discovery.get("max_items_per_surface", 40))
         if not 1 <= max_items <= 100:
             raise ValueError("sources.dexscreener_discovery.max_items_per_surface must be between 1 and 100")
@@ -3092,17 +3092,16 @@ class Runtime:
         # Spend dedicated follow-up capacity on the first ninety minutes. A
         # later token can still re-enter through a naturally fresh Dex surface,
         # but it does not displace new-token hydration merely to maintain a
-        # six-hour research history.
-        if age_seconds < 30 * 60:
+        # a ninety-minute research history.
+        if age_seconds < 5 * 60:
+            refresh_seconds = 15
+        elif age_seconds < 30 * 60:
             refresh_seconds = 60
         elif age_seconds < 90 * 60:
             refresh_seconds = 5 * 60
         else:
             return {}
-        next_at = max(
-            now + timedelta(seconds=refresh_seconds),
-            born + timedelta(seconds=901),
-        )
+        next_at = now + timedelta(seconds=refresh_seconds)
         return {"refresh_at": next_at, "followup_until": until} if next_at < until else {}
 
     async def poll_dexscreener_discovery_once(
@@ -3654,6 +3653,13 @@ class Runtime:
 
     async def poll_multichain_meme_data_once(self) -> None:
         """Collect shared Solana/BSC/Robinhood discovery without legacy feeds or Agents."""
+        await asyncio.gather(
+            self.poll_multichain_gap_sources_once(),
+            self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only),
+        )
+
+    async def poll_multichain_gap_sources_once(self) -> None:
+        """Rotate lower-frequency public gap recovery independently of Dex discovery."""
         cfg = self.config["sources"].get("multichain_meme_data") or {}
         chains = tuple(
             dict.fromkeys(
@@ -3670,10 +3676,8 @@ class Runtime:
             cursor = getattr(self, "_gecko_discovery_chain_cursor", 0)
             self._gecko_discovery_chain_cursor = cursor + 1
             gecko_tasks = [self._poll_gecko_network(chains[cursor % len(chains)])]
-        await asyncio.gather(
-            *gecko_tasks,
-            self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only),
-        )
+        if gecko_tasks:
+            await asyncio.gather(*gecko_tasks)
         self.store.heartbeat("multichain_meme_data")
 
     async def poll_external_once(self) -> None:
@@ -10147,18 +10151,23 @@ class Runtime:
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 asyncio.create_task(
                     self._periodic(
-                        "multichain_meme_data",
-                        min(
-                            float((self.config["sources"].get("multichain_meme_data") or {}).get(
-                                "interval_seconds", 90,
-                            )),
-                            float((self.config["sources"].get("dexscreener_discovery") or {}).get(
-                                "interval_seconds", 30,
-                            )),
-                        ),
-                        self.poll_multichain_meme_data_once,
+                        "dexscreener_discovery",
+                        float((self.config["sources"].get("dexscreener_discovery") or {}).get(
+                            "interval_seconds", 15,
+                        )),
+                        lambda: self.poll_dexscreener_discovery_once(discovery_only=True),
                     ),
-                    name="multichain_meme_data",
+                    name="dexscreener_discovery",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "multichain_gap_sources",
+                        float((self.config["sources"].get("multichain_meme_data") or {}).get(
+                            "interval_seconds", 90,
+                        )),
+                        self.poll_multichain_gap_sources_once,
+                    ),
+                    name="multichain_gap_sources",
                 ),
                 asyncio.create_task(
                     self._periodic("chain_meme_token_details", 5, self.chain_meme_token_details_once),

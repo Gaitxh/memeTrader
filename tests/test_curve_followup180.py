@@ -92,3 +92,20 @@ def test_migrated_amm_uses_ordinary_early_pool_cadence(monkeypatch):
     assert _runtime()._shared_market_followup_schedule(token, snapshot)[
         "refresh_at"
     ] == now + timedelta(minutes=1)
+
+
+def test_new_amm_collects_three_strategy_frames_inside_thirty_seconds(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    token, snapshot, _ = _snapshot(
+        now,
+        age_minutes=2,
+        dex_id="pancakeswap",
+        trades=8,
+        price=0.001,
+        liquidity=20_000.0,
+    )
+
+    assert _runtime()._shared_market_followup_schedule(token, snapshot)[
+        "refresh_at"
+    ] == now + timedelta(seconds=15)

@@ -1639,7 +1639,7 @@ def test_growth_followup_persists_fresh_shared_snapshot_without_resetting_discov
         snapshots[-1].raw["pair"]["pairCreatedAt"] = int((clock[0]-timedelta(hours=6)).timestamp()*1000)
         assert runtime._shared_market_followup_schedule(token, snapshots[-1]) == {}
         snapshots[-1].raw["pair"]["pairCreatedAt"] = int((clock[0]-timedelta(minutes=1)).timestamp()*1000)
-        assert abs((runtime._shared_market_followup_schedule(token, snapshots[-1])["refresh_at"]-clock[0]).total_seconds()-841) < .001
+        assert abs((runtime._shared_market_followup_schedule(token, snapshots[-1])["refresh_at"]-clock[0]).total_seconds()-15) < .001
         runtime.store.mark_token_detail_hydration(token.token_id, "hydrated", now=clock[0],
             refresh_at=clock[0], followup_until=clock[0]+timedelta(seconds=30))
         async def late_quote(*args, **kwargs):
