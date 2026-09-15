@@ -44,8 +44,8 @@ from .capital_duration_risk import load_duration_risk_samples, seal_duration_ris
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
-    DEX_REQUEST_HIGH_PRIORITY, GECKO_REQUEST_HIGH_PRIORITY, dex_low_budget,
-    DexLowPriorityCapacityDeferred,
+    DEX_REQUEST_HIGH_PRIORITY, GECKO_REQUEST_HIGH_PRIORITY, GECKO_LOW_START_ALLOWED,
+    dex_low_budget, DexLowPriorityCapacityDeferred, GeckoLowPriorityDeferred,
     DexScreenerClient,
     EvmRouteQuoteError,
     EvmRouteQuoteProtocolError,
@@ -176,6 +176,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "multichain_meme_data": {
             "chains": ["solana", "bsc", "robinhood"],
             "interval_seconds": 90,
+            "geckoterminal_discovery_enabled": True,
         },
         "dexscreener_discovery": {
             "enabled": True,
@@ -2828,7 +2829,16 @@ class Runtime:
             chain_scope=str(network),
         )
         try:
-            tokens = await GeckoNewPoolsCollector(self.http, network).poll()
+            low_start = GECKO_LOW_START_ALLOWED.set(
+                lambda: (
+                    not self._critical_onchain_exit_event.is_set()
+                    and not bool(getattr(self.http, "_gecko_start_waiters", {}).get(True, ()))
+                )
+            )
+            try:
+                tokens = await GeckoNewPoolsCollector(self.http, network).poll()
+            finally:
+                GECKO_LOW_START_ALLOWED.reset(low_start)
             self.store.heartbeat(name, item=bool(tokens))
             active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
             held_versions = [active_version, *getattr(self, "_chain_carry_versions", [])]
@@ -2941,6 +2951,8 @@ class Runtime:
                 returned_count=len(tokens),
                 duplicate_token_count=duplicates,
             )
+        except GeckoLowPriorityDeferred:
+            self.store.finish_token_discovery_round(round_id, status="interrupted")
         except Exception as exc:
             self.store.finish_token_discovery_round(
                 round_id,
@@ -3552,8 +3564,16 @@ class Runtime:
                 if str(chain).strip()
             )
         )
+        gecko_tasks = []
+        if cfg.get("geckoterminal_discovery_enabled", True) and chains:
+            # This source is gap recovery for the native launch feeds. Rotate one
+            # chain per shared cycle so it cannot spend three starts at once or
+            # crowd out exact-pool marks on GeckoTerminal's public host budget.
+            cursor = getattr(self, "_gecko_discovery_chain_cursor", 0)
+            self._gecko_discovery_chain_cursor = cursor + 1
+            gecko_tasks = [self._poll_gecko_network(chains[cursor % len(chains)])]
         await asyncio.gather(
-            *(self._poll_gecko_network(chain) for chain in chains),
+            *gecko_tasks,
             self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only),
         )
         self.store.heartbeat("multichain_meme_data")
