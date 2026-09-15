@@ -26919,6 +26919,32 @@ class Store:
                 added += 1
         return added
 
+    def register_chain_meme_goldendog_recovery164(self) -> int:
+        """Append the same-entry low principal-recovery challenger at a fresh frontier."""
+        from . import goldendog_recovery164
+
+        goldendog_recovery164.install()
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, goldendog_recovery164.ARM),
+            ).fetchone() is not None:
+                return 0
+            parent = self.db.execute(
+                "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, goldendog_recovery164.PARENT_ARM),
+            ).fetchone()
+            if parent is None:
+                return 0
+            self.append_chain_meme_trader_policy(
+                goldendog_recovery164.policy(self._json_object(parent["policy_json"])),
+                activated_at=utcnow(),
+            )
+        return 1
+
     def register_chain_meme_runup_floor_experiments(self) -> int:
         """Append the RUNUP-FLOOR150 entry arms at their own frontier.
 

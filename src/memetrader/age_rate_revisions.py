@@ -189,6 +189,15 @@ def next_frame_minimum_principal_recovery_raw(
     realized = _number(position.get("realized_proceeds_usd"))
     if debit is None or debit <= 0.0 or realized is None or realized < 0.0:
         return None
+    if policy is not None and policy.get("minimum_principal_recovery_multiple") is not None:
+        multiple = _number(policy.get("minimum_principal_recovery_multiple"))
+        quantity = _number(position.get("remaining_quantity_tokens"))
+        price = _number(frame.get("market_price_usd"))
+        if multiple is None or multiple < 1.0 or quantity is None or price is None:
+            return None
+        full_net = sell_terms(quantity, price, definition)["net_usd"]
+        if realized + full_net + 1e-9 < debit * multiple:
+            return None
     amount = minimum_principal_recovery_sell_amount_raw(
         remaining_amount_raw=position.get("amount_raw"),
         remaining_quantity_tokens=position.get("remaining_quantity_tokens"),
