@@ -9898,7 +9898,24 @@ class Store:
         attempted_at = parse_time(now or utcnow())
         with self._lock, self.db:
             row = self.db.execute(
-                "SELECT attempts,followup_until FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
+                """
+                SELECT attempts,followup_until,
+                       EXISTS(
+                           SELECT 1 FROM token_launch_facts AS fact
+                           WHERE fact.token_id=token_detail_hydration.token_id
+                             AND fact.launch_provider='pumpportal'
+                             AND fact.launch_surface='pump'
+                             AND fact.launch_event_type='create'
+                             AND fact.recorded_at>=?
+                             AND fact.recorded_at<=?
+                       ) AS recent_pump_create
+                FROM token_detail_hydration WHERE token_id=?
+                """,
+                (
+                    iso(attempted_at - timedelta(minutes=10)),
+                    iso(attempted_at),
+                    str(token_id),
+                ),
             ).fetchone()
             if row is None:
                 return
@@ -9908,8 +9925,20 @@ class Store:
                 next_attempt_at = iso(parse_time(refresh_at)) if refresh_at is not None else None
             elif status == "error":
                 next_attempt_at = iso(attempted_at + timedelta(minutes=5))
+            elif bool(row["recent_pump_create"]) and attempts == 1:
+                # A create event precedes DEX-pair visibility. The generic
+                # five-minute first retry missed the early migration window,
+                # although the first request itself normally completed in
+                # seconds. Keep this source-specific and bounded; ordinary
+                # no-pair identities retain the conservative backoff below.
+                next_attempt_at = iso(attempted_at + timedelta(seconds=90))
+            elif bool(row["recent_pump_create"]) and attempts == 2:
+                # The short probe supplements rather than replaces the old
+                # five-minute retry frontier: 90s + 210s = 300s.
+                next_attempt_at = iso(attempted_at + timedelta(seconds=210))
             else:
-                retry_minutes = (5, 30, 120, 360)[min(attempts - 1, 3)]
+                baseline_attempt = attempts - (1 if bool(row["recent_pump_create"]) else 0)
+                retry_minutes = (5, 30, 120, 360)[min(baseline_attempt - 1, 3)]
                 next_attempt_at = iso(attempted_at + timedelta(minutes=retry_minutes))
             deadline = followup_until if status == "hydrated" else row["followup_until"]
             if deadline is not None:
