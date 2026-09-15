@@ -59,3 +59,19 @@ experienced concurrent upstream failures and `p95 5.77s` duration during the
 short slice, so causality and stability remain unresolved until the specified
 30-minute comparable window. No additional capacity or strategy change is
 authorized by this early result.
+
+## Mature 30-minute receipt
+
+At `2026-09-15T13:22:13Z`, 1,841.8 seconds after deployment, 528 Pump creates
+were old enough for evaluation. All 528 had a persisted DEX snapshot; 524 were
+available within 240 seconds of the local launch receipt. Discovery-to-snapshot
+latency was `p50 105.7s`, `p95 131.4s`, versus the pre-change `p50 312.9s`,
+`p95 345.7s`.
+
+The token-detail component had 256 calls and zero failures. Held-price retrieval
+still saw upstream request failures (144/971 cumulative calls), but its rolling
+`p95` duration improved to `4.70s` from `5.77s` in the initial slice; exit
+application had zero failures and `p95 0.23s`. The fast probe runs in the
+existing low-priority HTTP budget, while held work retains its high-priority
+lane. No lifecycle expiry or hydration failure appeared among the mature Pump
+cohort. The guard therefore passes and the source-specific retry is retained.

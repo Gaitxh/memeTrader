@@ -38,6 +38,17 @@ def test_the_arms_are_entry_arms_and_so_live_in_SPECS():
         assert hold == activity_floor150.HOLD_MINUTES, arm
 
 
+def test_explicit_policy_activity_floor_is_enforced_without_arm_whitelist():
+    policy = {"entry_filter": {"activity_floor": {"min_trades": 30.0}}}
+    assert activity_floor150.reject_reason("new_arm", _Snap(20, 9), policy) == (
+        "activity_floor_trades_not_met"
+    )
+    assert activity_floor150.reject_reason("new_arm", _Snap(20, 10), policy) is None
+    assert activity_floor150.reject_reason("new_arm", _Snap(None, 30), policy) == (
+        "activity_floor_trades_not_met"
+    )
+
+
 def test_the_arms_differ_from_the_control_in_exactly_one_respect():
     """Same kind, same hold, same stop/trail/notional; the floor is the only difference.
 

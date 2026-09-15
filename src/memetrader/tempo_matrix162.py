@@ -5,7 +5,13 @@ from copy import deepcopy
 from typing import Any, Mapping
 
 
-VERSION = "tempo-matrix162/v1"
+VERSION = "tempo-matrix162/v2"
+
+ACTIVITY_PAIR_GROUP = "tempo162_mature_two_step_t30_5m_90m_v1"
+ACTIVITY_PAIR = (
+    "alpha149_mature_two_step_t30_fast5_pair_v1",
+    "alpha149_mature_two_step_t30_hold90_pair_v1",
+)
 
 EXPERIMENTS: dict[str, dict[str, Any]] = {
     "alpha149_df_mature_price_up_fast5_pair_v2": {
@@ -38,6 +44,20 @@ EXPERIMENTS: dict[str, dict[str, Any]] = {
         "name": "Mature three-frame entry with fresh 90-minute control",
         "max_hold_minutes": 90.0,
     },
+    ACTIVITY_PAIR[0]: {
+        "parent": "alpha149_mature_two_step_slow_v1",
+        "name": "Active mature three-frame entry with 5-minute horizon",
+        "max_hold_minutes": 5.0,
+        "activity_floor": {"min_trades": 30.0},
+        "paired_entry_group": ACTIVITY_PAIR_GROUP,
+    },
+    ACTIVITY_PAIR[1]: {
+        "parent": "alpha149_mature_two_step_slow_v1",
+        "name": "Active mature three-frame entry with 90-minute horizon",
+        "max_hold_minutes": 90.0,
+        "activity_floor": {"min_trades": 30.0},
+        "paired_entry_group": ACTIVITY_PAIR_GROUP,
+    },
 }
 
 PAIRS = (
@@ -49,6 +69,7 @@ PAIRS = (
         "alpha149_mature_two_step_fast5_v1",
         "alpha149_mature_two_step_slow90_control_v1",
     ),
+    ACTIVITY_PAIR,
 )
 
 
@@ -92,11 +113,24 @@ def policy(parent: Mapping[str, Any], arm: str) -> dict[str, Any]:
     result["entry_filter"] = {
         **(result.get("entry_filter") or {}), "direction": arm,
     }
+    if spec.get("activity_floor"):
+        result["entry_filter"]["activity_floor"] = deepcopy(spec["activity_floor"])
+    if spec.get("paired_entry_group"):
+        result.update(
+            paired_entry_group=str(spec["paired_entry_group"]),
+            paired_entry_size=2,
+        )
+        peer = next(candidate for candidate in ACTIVITY_PAIR if candidate != arm)
+        result["excess_return_vs_arm"] = peer
     result.pop("behavior_contract_hash", None)
     result.pop("forward_activation_snapshot_id", None)
     result.pop("forward_started_at", None)
     result.pop("runtime_addition_id", None)
     result.pop("stage", None)
+    # A parent's process-start clock can predate this arm's append-only frontier and
+    # would make the fresh clone permanently unreachable. Signal and record timestamps
+    # remain subject to the arm's own forward_started_at checks in Store.
+    result.pop("signal_origin_clock", None)
     return result
 
 
@@ -107,6 +141,11 @@ def snapshot() -> dict[str, Any]:
         "parents": {arm: spec["parent"] for arm, spec in EXPERIMENTS.items()},
         "pairs": [list(pair) for pair in PAIRS],
         "changed_dimension": "max_hold_minutes_only",
+        "activity_conditioned_pair": {
+            "arms": list(ACTIVITY_PAIR),
+            "min_trades_5m": 30.0,
+            "paired_entry_group": ACTIVITY_PAIR_GROUP,
+        },
         "effects": "paper_only",
         "extra_requests": 0,
         "no_historical_backfill": True,

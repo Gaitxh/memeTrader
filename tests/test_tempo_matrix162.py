@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from memetrader import alpha149, tempo_matrix162
+from memetrader.store import Store
 
 
 def _parent(arm, hold, activate, drawdown):
@@ -41,6 +42,22 @@ def test_policy_changes_only_identity_and_hold_horizon():
     assert "forward_started_at" not in result
 
 
+def test_activity_pair_declares_one_shared_entry_floor_and_strict_pairing():
+    parent = _parent("alpha149_mature_two_step_slow_v1", 90, 0.3, 0.15)
+    parent["signal_origin_clock"] = "activation_at"
+    policies = [tempo_matrix162.policy(parent, arm) for arm in tempo_matrix162.ACTIVITY_PAIR]
+
+    assert {p["max_hold_minutes"] for p in policies} == {5.0, 90.0}
+    assert {p["paired_entry_group"] for p in policies} == {
+        tempo_matrix162.ACTIVITY_PAIR_GROUP
+    }
+    assert {p["paired_entry_size"] for p in policies} == {2}
+    assert {p["entry_filter"]["activity_floor"]["min_trades"] for p in policies} == {30.0}
+    assert all("signal_origin_clock" not in p for p in policies)
+    assert policies[0]["excess_return_vs_arm"] == tempo_matrix162.ACTIVITY_PAIR[1]
+    assert policies[1]["excess_return_vs_arm"] == tempo_matrix162.ACTIVITY_PAIR[0]
+
+
 def test_install_reuses_each_parent_signal_kind_and_exit_shape():
     tempo_matrix162.install()
     for arm, spec in tempo_matrix162.EXPERIMENTS.items():
@@ -68,3 +85,35 @@ def test_snapshot_declares_forward_paper_boundary():
     assert snap["effects"] == "paper_only"
     assert snap["extra_requests"] == 0
     assert snap["no_historical_backfill"] is True
+
+
+def test_registration_appends_activity_pair_at_one_fresh_frontier(tmp_path):
+    store = Store(tmp_path / "tempo.sqlite3", initial_cash_usd=1000)
+    try:
+        store.activate_chain_meme_trader_funded_period()
+        before = store.db.execute(
+            "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+        ).fetchone()[0]
+        parent = next(
+            policy for policy in alpha149.policies({})
+            if policy["arm_id"] == "alpha149_mature_two_step_slow_v1"
+        )
+        store.append_chain_meme_trader_policy(parent)
+        store.register_chain_meme_tempo_matrix162()
+        rows = store.db.execute(
+            "SELECT arm_id,activated_at,activation_snapshot_id,"
+            "activation_evaluation_id,policy_json "
+            "FROM chain_meme_trader_policy_additions WHERE definition_version=? "
+            "AND arm_id IN (?,?) ORDER BY arm_id",
+            (store.CHAIN_MEME_TRADER_ACTIVE_VERSION, *tempo_matrix162.ACTIVITY_PAIR),
+        ).fetchall()
+        assert len(rows) == 2
+        assert len({
+            (row["activated_at"], row["activation_snapshot_id"], row["activation_evaluation_id"])
+            for row in rows
+        }) == 1
+        assert {row["activation_snapshot_id"] for row in rows} == {before}
+        assert all("signal_origin_clock" not in row["policy_json"] for row in rows)
+        assert store.register_chain_meme_tempo_matrix162() == 0
+    finally:
+        store.close()

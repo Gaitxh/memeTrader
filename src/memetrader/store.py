@@ -28278,7 +28278,7 @@ class Store:
                     #
                     # `history` is this loop's own 20-minute ascending observer window for the
                     # token+pair, so the run-up cap needs no extra query.
-                    floor_rejection = activity_floor150.reject_reason(arm, snapshot)
+                    floor_rejection = activity_floor150.reject_reason(arm, snapshot, policy)
                     if floor_rejection is None:
                         floor_rejection = runup_floor150.reject_reason(arm, snapshot, history)
                     if floor_rejection is not None:

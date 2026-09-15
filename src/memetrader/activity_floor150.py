@@ -174,16 +174,28 @@ def activity(snapshot: Any) -> tuple[int, float]:
     return int(buys) + int(sells), float(volume)
 
 
-def reject_reason(arm: str, snapshot: Any) -> str | None:
-    """None when the arm may act (including every arm that is not an ACTIVITY-FLOOR150 arm)."""
-    floor = FLOORS.get(str(arm))
+def reject_reason(
+    arm: str,
+    snapshot: Any,
+    policy: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Apply this module's floor or an explicit activity floor declared by a policy."""
+    declared = (policy or {}).get("entry_filter") or {}
+    floor = declared.get("activity_floor") or FLOORS.get(str(arm))
     if floor is None:
         return None
     trades, volume = activity(snapshot)
     minimum_trades = floor.get("min_trades")
+    if minimum_trades is not None and (
+        getattr(snapshot, "buys_5m", None) is None
+        or getattr(snapshot, "sells_5m", None) is None
+    ):
+        return "activity_floor_trades_not_met"
     if minimum_trades is not None and trades < minimum_trades:
         return "activity_floor_trades_not_met"
     minimum_volume = floor.get("min_volume_5m_usd")
+    if minimum_volume is not None and getattr(snapshot, "volume_5m_usd", None) is None:
+        return "activity_floor_volume_not_met"
     if minimum_volume is not None and volume < minimum_volume:
         return "activity_floor_volume_not_met"
     return None
