@@ -146,3 +146,35 @@ def test_collector_reuses_confirmed_bounded_account_read_and_real_decode():
             rejected = await collector.bonding_curve_observations([{**seeds[0], "bonding_curve_key": str(Pubkey.new_unique())}])
             assert rejected[0]["status"] == "UNKNOWN_IDENTITY" and len(calls) == 1
     asyncio.run(run())
+
+
+def test_pregrad_read_uses_its_dedicated_http_pool():
+    async def run():
+        seed = launch()
+        raw = bytearray(115)
+        raw[:8] = PUMP_BONDING_CURVE_DISCRIMINATOR
+        raw[24:32] = (200).to_bytes(8, "little")
+        raw[32:40] = (1234567890).to_bytes(8, "little")
+        curve = dict(owner=PUMP_PROGRAM_ID, lamports=100,
+                     data=[base64.b64encode(raw).decode(), "base64"])
+        calls = []
+
+        def respond(request):
+            import json
+            payload = json.loads(request.content)
+            calls.append(payload)
+            return httpx.Response(200, json={"result": {"context": {"slot": 123},
+                                  "value": [curve, None, None, None]}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as dedicated:
+            collector = SolanaHeldAccountCollector.__new__(SolanaHeldAccountCollector)
+            collector.http = None
+            collector.pregrad_http = dedicated
+            collector.rpc_url = "https://rpc.test"
+            collector.max_multiple_accounts = 100
+            observed = await collector.bonding_curve_observations([seed])
+
+        assert len(calls) == 1
+        assert observed[0]["status"] == "verified"
+
+    asyncio.run(run())

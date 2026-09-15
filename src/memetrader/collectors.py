@@ -3476,6 +3476,13 @@ class SolanaHeldAccountCollector:
             trust_env=False,
             proxy=self.proxy_url or None,
         )
+        # The pre-graduation watch has a six-second wall budget. Keep its tiny
+        # bundled read independent from held-position and quote RPC contention.
+        self.pregrad_http = httpx.AsyncClient(
+            timeout=15.0,
+            trust_env=False,
+            proxy=self.proxy_url or None,
+        )
 
     @staticmethod
     def _rpc_error_reason(exc: Exception) -> str:
@@ -3485,6 +3492,9 @@ class SolanaHeldAccountCollector:
 
     async def close(self) -> None:
         await self.http.aclose()
+        pregrad_http = getattr(self, "pregrad_http", self.http)
+        if pregrad_http is not self.http:
+            await pregrad_http.aclose()
 
     async def sample_pumpswap_participation(
         self, pool: Mapping[str, Any], frontier: Mapping[str, Any] | None,
@@ -4046,8 +4056,9 @@ class SolanaHeldAccountCollector:
         return outcomes
 
     async def _initial_updates(
-        self, targets: list[Mapping[str, Any]]
+        self, targets: list[Mapping[str, Any]], *, http: httpx.AsyncClient | None = None,
     ) -> list[dict[str, Any]]:
+        client = http or self.http
         updates: list[dict[str, Any]] = []
         grouped: list[list[Mapping[str, Any]]] = []
         by_pool: dict[int, list[Mapping[str, Any]]] = {}
@@ -4066,7 +4077,7 @@ class SolanaHeldAccountCollector:
                 batches.append([])
             batches[-1].extend(group)
         for batch_index, batch in enumerate(batches):
-            response = await self.http.post(
+            response = await client.post(
                 self.rpc_url,
                 json={
                     "jsonrpc": "2.0", "id": batch_index + 1,
@@ -4152,7 +4163,9 @@ class SolanaHeldAccountCollector:
             if len(bundle_targets)+len(targets)<=self.max_multiple_accounts:
                 bundle_targets += [{'pubkey':t['base_mint'],'account_kind':'token_mint',
                     'native_metadata_controls':True,'pool_target_id':-100} for t in targets]
-        updates = await self._initial_updates(bundle_targets)
+        updates = await self._initial_updates(
+            bundle_targets, http=getattr(self, "pregrad_http", self.http),
+        )
         configs = {u['account_kind']:u for u in updates if u['account_kind'] in {'pump_global','fee_config'}}
         mints = {u['pubkey']:u for u in updates if u['account_kind']=='token_mint'}
         for update in updates:
