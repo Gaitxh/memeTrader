@@ -3047,7 +3047,7 @@ class Runtime:
         if born > snapshot.observed_at:
             return {}
         age_seconds = max(0.0, (snapshot.observed_at - born).total_seconds())
-        until = born + timedelta(hours=6)
+        until = born + timedelta(minutes=90)
         dex_id = str(pair.get("dexId") or "").lower()
         txns = pair.get("txns") if isinstance(pair.get("txns"), Mapping) else {}
         m5 = txns.get("m5") if isinstance(txns.get("m5"), Mapping) else {}
@@ -3078,10 +3078,10 @@ class Runtime:
             if (
                 set(quote_rejections) - curve_missing_fields
                 or m5_trades < 3
-                or age_seconds >= 6 * 60 * 60
+                or age_seconds >= 90 * 60
             ):
                 return {}
-            refresh_seconds = 5 * 60 if age_seconds < 90 * 60 else 15 * 60
+            refresh_seconds = 5 * 60
             next_at = now + timedelta(seconds=refresh_seconds)
             return (
                 {"refresh_at": next_at, "followup_until": until}
@@ -3089,18 +3089,16 @@ class Runtime:
             )
         if quote_rejections or not math.isfinite(liquidity) or liquidity < floor:
             return {}
-        # Keep the high-information early window at one minute, then taper
-        # ordinary observations as their marginal value falls.  A flat 60s
-        # cadence for every token created a demand of ~3.6k follow-ups/minute
-        # against a bounded capacity below 350/minute, making the queue
-        # mathematically impossible to drain.  The tiers preserve continued
-        # observation without increasing provider load or starving exits.
+        # Spend dedicated follow-up capacity on the first ninety minutes. A
+        # later token can still re-enter through a naturally fresh Dex surface,
+        # but it does not displace new-token hydration merely to maintain a
+        # six-hour research history.
         if age_seconds < 30 * 60:
             refresh_seconds = 60
         elif age_seconds < 90 * 60:
             refresh_seconds = 5 * 60
         else:
-            refresh_seconds = 15 * 60
+            return {}
         next_at = max(
             now + timedelta(seconds=refresh_seconds),
             born + timedelta(seconds=901),

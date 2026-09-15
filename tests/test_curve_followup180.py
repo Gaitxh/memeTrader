@@ -50,7 +50,7 @@ def test_active_curve_reuses_followup_capacity_without_becoming_tradable(monkeyp
 
     assert schedule["refresh_at"] == now + timedelta(minutes=5)
     assert abs(
-        (schedule["followup_until"] - born - timedelta(hours=6)).total_seconds()
+        (schedule["followup_until"] - born - timedelta(minutes=90)).total_seconds()
     ) < 0.001
 
 
@@ -66,7 +66,7 @@ def test_curve_missing_fields_do_not_bypass_temporal_or_identity_rejection(monke
     assert schedule == {}
 
 
-def test_curve_prefilter_rejects_inactive_surface_and_tapers_mature_activity(monkeypatch):
+def test_curve_prefilter_rejects_inactive_and_stops_after_ninety_minutes(monkeypatch):
     now = utcnow()
     monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
     runtime = _runtime()
@@ -74,9 +74,7 @@ def test_curve_prefilter_rejects_inactive_surface_and_tapers_mature_activity(mon
     active_token, mature, _ = _snapshot(now, age_minutes=120, trades=8)
 
     assert runtime._shared_market_followup_schedule(inactive_token, inactive) == {}
-    assert runtime._shared_market_followup_schedule(active_token, mature)[
-        "refresh_at"
-    ] == now + timedelta(minutes=15)
+    assert runtime._shared_market_followup_schedule(active_token, mature) == {}
 
 
 def test_migrated_amm_uses_ordinary_early_pool_cadence(monkeypatch):

@@ -29,16 +29,16 @@ ordinary usable AMM quote:
   least three current five-minute transactions;
 - no-price or below-floor curve surfaces remain ineligible for trading;
 - eligible curve identities reuse the existing follow-up half-batch every five
-  minutes for the first 90 minutes and every 15 minutes thereafter;
-- observation stops at the original six-hour lifecycle deadline;
-- a migrated positive-price AMM returns to the existing one/five/fifteen-minute
-  ordinary schedule and must still pass all identity, point-in-time, liquidity,
+  minutes for at most the first 90 minutes;
+- observation stops at the 90-minute lifecycle deadline;
+- a migrated positive-price AMM returns to the existing one/five-minute
+  ordinary schedule inside the 90-minute window and must still pass all identity, point-in-time, liquidity,
   safety, cash, concentration, and strategy gates.
 
-No request ceiling or worker was added. In the measured six-hour frontier, only 147
-curve rows met the three-trade prefilter. Even if all remained active for the complete
-lifecycle, their upper-bound demand is about 15 follow-ups per minute, below the
-capacity released by repair 179's consecutive-`no_pair` backoff.
+No request ceiling or worker was added. In the measured six-hour diagnostic frontier,
+only 147 curve rows met the three-trade prefilter. The deployed lifecycle was then
+shortened from six hours to 90 minutes: later research frames may arrive through
+natural Dex rediscovery, but they do not consume dedicated follow-up capacity.
 
 ## Verification and monitoring
 
