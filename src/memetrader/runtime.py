@@ -3116,7 +3116,10 @@ class Runtime:
         # total ten-item fast-cycle budget had spare capacity.
         followup_limit = 0
         if self.chain_meme_trader_only and max_hydrations > 1:
-            followup_share = 0.80 if hydration_only else 0.50
+            # The fast lane serves both first frames and lifecycle follow-ups.
+            # Reserving 80% left only six of thirty slots for new discoveries
+            # and amplified the measured first-frame queue.
+            followup_share = 0.50
             followup_limit = min(
                 max_hydrations - 1,
                 max(1, int(max_hydrations * followup_share)),

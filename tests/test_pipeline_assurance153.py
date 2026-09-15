@@ -40,7 +40,7 @@ def test_fast_hydration_cycle_uses_one_full_batch_and_reserves_followups(tmp_pat
         )
         await runtime.poll_dexscreener_discovery_once(hydration_only=True)
         assert captured[0]["limit"] == 30
-        assert captured[0]["followup_limit"] == 24
+        assert captured[0]["followup_limit"] == 15
         await runtime.close()
 
     asyncio.run(scenario())
