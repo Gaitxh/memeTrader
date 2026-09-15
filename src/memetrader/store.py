@@ -26945,6 +26945,68 @@ class Store:
             )
         return 1
 
+    def register_chain_meme_loss_retirements(self) -> int:
+        """Apply frozen account, paired-test and unreachable-contract retirements."""
+        import json as _json
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        # Separate sources preserve the causal reason and can be reversed independently.
+        spec = (
+            ("failed_arms_r39", "failed_arms_r39.json", "FAILED_ACCOUNT_DEPLETED"),
+            ("dominated_arms_r45", "dominated_arms_r45.json", "DOMINATED_IN_PAIRED_TEST"),
+            (
+                "unreachable_arms_r165",
+                "unreachable_arms_r165.json",
+                "RETIRED_UNREACHABLE_CONTRACT",
+            ),
+        )
+        key = f"chain-meme-account-loss-retirement/v1:{version}"
+        existing = self.get_kv(key, {}) or {}
+        merged = dict(existing.get("arms") or {})
+        sources = dict(existing.get("sources") or {})
+        changed = False
+        for name, filename, state in spec:
+            path = self.path.parent / "authority" / filename
+            if not path.is_file():
+                continue
+            try:
+                payload = _json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            arms = {
+                str(item.get("arm_id")): {
+                    **{k: v for k, v in item.items() if k != "arm_id"},
+                    "state": state,
+                    "representative": None,
+                    "reason": item.get("reason") or payload.get("rule"),
+                    "source": f"data/authority/{filename}",
+                }
+                for item in (payload.get("arms") or [])
+                if item.get("arm_id")
+            }
+            # An empty readable source releases only the arms that source previously owned.
+            for gone in set(sources.get(name) or []) - set(arms):
+                merged.pop(gone, None)
+            merged.update(arms)
+            sources[name] = sorted(arms)
+            changed = True
+        if not changed:
+            return 0
+        with self._lock, self.db:
+            self.set_kv(key, {
+                "activated_at": existing.get("activated_at") or iso(utcnow()),
+                "updated_at": iso(utcnow()),
+                "arms": merged,
+                "sources": sources,
+                "active_assessments": existing.get("active_assessments") or {},
+                "source": "register_chain_meme_loss_retirements",
+                "note": (
+                    "entry_paused only; no policy JSON, position, fill or history is "
+                    "modified, and removing an arm from the file restores it"
+                ),
+            })
+        return len(merged)
+
     def register_chain_meme_runup_floor_experiments(self) -> int:
         """Append the RUNUP-FLOOR150 entry arms at their own frontier.
 

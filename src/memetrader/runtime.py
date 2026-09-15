@@ -1438,6 +1438,7 @@ class Runtime:
                     self.store.register_chain_meme_righttail_recovery152_experiments()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
+                    self.store.register_chain_meme_loss_retirements()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
