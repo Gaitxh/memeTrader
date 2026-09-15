@@ -4,11 +4,11 @@ from memetrader.models import TokenCandidate, TokenSnapshot, utcnow
 from memetrader.runtime import Runtime
 
 
-def _runtime():
+def _runtime(*, rejections=()):
     runtime = Runtime.__new__(Runtime)
     runtime.chain_meme_trader_only = True
     runtime._chain_paper_execution = {"min_pool_liquidity_usd": 1000.0}
-    runtime._held_pool_quote_rejections = lambda *args: []
+    runtime._held_pool_quote_rejections = lambda *args: list(rejections)
     return runtime
 
 
@@ -44,12 +44,26 @@ def test_active_curve_reuses_followup_capacity_without_becoming_tradable(monkeyp
     monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
     token, snapshot, born = _snapshot(now, age_minutes=20)
 
-    schedule = _runtime()._shared_market_followup_schedule(token, snapshot)
+    schedule = _runtime(
+        rejections=("quote_price_unavailable", "quote_liquidity_unavailable")
+    )._shared_market_followup_schedule(token, snapshot)
 
     assert schedule["refresh_at"] == now + timedelta(minutes=5)
     assert abs(
         (schedule["followup_until"] - born - timedelta(hours=6)).total_seconds()
     ) < 0.001
+
+
+def test_curve_missing_fields_do_not_bypass_temporal_or_identity_rejection(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    token, snapshot, _ = _snapshot(now, age_minutes=20)
+
+    schedule = _runtime(
+        rejections=("quote_price_unavailable", "quote_stale_at_execution")
+    )._shared_market_followup_schedule(token, snapshot)
+
+    assert schedule == {}
 
 
 def test_curve_prefilter_rejects_inactive_surface_and_tapers_mature_activity(monkeypatch):

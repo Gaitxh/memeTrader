@@ -45,6 +45,15 @@ capacity released by repair 179's consecutive-`no_pair` backoff.
 Twelve focused tests passed across the new curve cases, repair 179 backpressure
 cases, pipeline153 scheduling contract, and existing growth follow-up behavior.
 
+The first deployed natural window exposed an ordering defect not represented by the
+initial helper fixture: three active curve frames arrived, but the sellable-quote
+validator rejected their missing price before curve classification. The correction
+allows only the expected curve omissions (`quote_price_unavailable`,
+`quote_liquidity_unavailable`, `QUOTE_USD_UNKNOWN`) past that point; stale, temporal,
+identity, cache, and every other rejection still stop scheduling. The expanded focused
+set passes 13 tests. Natural scheduling evidence must be collected after this corrected
+hash is deployed.
+
 Forward acceptance compares: active curve enrollments, curve follow-up attempts,
 new-pool positive-price recovery, migration-to-evaluation latency, admitted cohorts,
 deadline expiry, ordinary valid-pool lateness, first-hydration latency, provider

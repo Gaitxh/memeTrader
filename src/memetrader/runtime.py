@@ -3035,8 +3035,6 @@ class Runtime:
         if not self.chain_meme_trader_only:
             return {}
         now = utcnow()
-        if self._held_pool_quote_rejections(token.token_id, token, snapshot, now):
-            return {}
         pair = (snapshot.raw or {}).get("pair", snapshot.raw or {})
         created = pair.get("pairCreatedAt")
         if not created or not pair.get("pairAddress"):
@@ -3063,13 +3061,25 @@ class Runtime:
             dex_id in CURVE_STAGE_DEX_IDS
             and (price <= 0.0 or not math.isfinite(liquidity) or liquidity < floor)
         )
+        quote_rejections = self._held_pool_quote_rejections(
+            token.token_id, token, snapshot, now
+        )
         if curve_stage:
             # Curve identities are not entry evidence, but an active curve can
             # graduate into a new AMM between discovery surface polls. Reuse
             # the existing bounded follow-up batch only when current activity
             # is non-trivial. This is a prefilter, never permission to trade a
             # missing price or missing-liquidity surface.
-            if m5_trades < 3 or age_seconds >= 6 * 60 * 60:
+            curve_missing_fields = {
+                "quote_price_unavailable",
+                "quote_liquidity_unavailable",
+                "QUOTE_USD_UNKNOWN",
+            }
+            if (
+                set(quote_rejections) - curve_missing_fields
+                or m5_trades < 3
+                or age_seconds >= 6 * 60 * 60
+            ):
                 return {}
             refresh_seconds = 5 * 60 if age_seconds < 90 * 60 else 15 * 60
             next_at = now + timedelta(seconds=refresh_seconds)
@@ -3077,7 +3087,7 @@ class Runtime:
                 {"refresh_at": next_at, "followup_until": until}
                 if next_at < until else {}
             )
-        if not math.isfinite(liquidity) or liquidity < floor:
+        if quote_rejections or not math.isfinite(liquidity) or liquidity < floor:
             return {}
         # Keep the high-information early window at one minute, then taper
         # ordinary observations as their marginal value falls.  A flat 60s
