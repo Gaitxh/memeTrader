@@ -27,7 +27,7 @@ def test_missing_window_and_sparse_peer_are_explicit():
 
 def test_policy_size_and_restart_payload_are_bounded():
     at=utcnow(); e=Engine(at); e.accept(row(at,0),at); payload=e.state_payload(); json.dumps(payload); restored=Engine(at); assert restored.load_state(payload)
-    ps=policies({}); assert len(ps)==6 and all(p["notional_usd"]==2 and p["entry_filter"]["max_concurrent_positions"]==2 for p in ps)
+    ps=policies({}); assert len(ps)==8 and all(p["notional_usd"]==2 and p["entry_filter"]["max_concurrent_positions"]==2 for p in ps)
     runner=next(p for p in ps if p["arm_id"]==ARMS[3]); assert runner["entry_alias_of"]==ARMS[0] and runner["trend_max_hold_minutes"]==120
 
 

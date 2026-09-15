@@ -190,7 +190,8 @@ class Engine:
                 state.setdefault("signals", {})[arm] = envelope; self.counts["signal:"+arm] += 1
             if arm in state.get("signals", {}) and 0 <= (now-parse_time(state["signals"][arm]["recorded_at"])).total_seconds()<=60:
                 out[arm] = deepcopy(state["signals"][arm])
-        return out
+        from .trend_moonbag169 import alias_signals
+        return alias_signals(out)
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}
@@ -263,4 +264,6 @@ def policies(base):
         if arm == ARMS[2]: p["max_hold_minutes"] = 15
         if arm == ARMS[3]: p.update(trajectory_trend_runner=True, source_arm_ids=[ARMS[0]], entry_alias_of=ARMS[0], trend_base_hold_minutes=30, trend_max_hold_minutes=120)
         result.append(p)
+    from .trend_moonbag169 import policies as moonbag_policies
+    result.extend(moonbag_policies(result[3]))
     return result
