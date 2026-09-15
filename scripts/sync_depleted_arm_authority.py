@@ -55,12 +55,7 @@ def merge_candidates(
         item = {
             "arm_id": arm,
             "cash_usd": float(row["cash_usd"]),
-            "open_position_count": 0,
-            "closed_position_count": int(row.get("closed_position_count") or 0),
-            "realized_pnl_usd": float(row.get("realized_pnl_usd") or 0.0),
-            "account_snapshot_id": int(row["id"]),
             "observed_at": str(row["recorded_at"]),
-            "reason": "latest account cash below uniform entry size with zero open positions",
         }
         existing.append(item)
         added.append(item)

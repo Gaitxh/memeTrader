@@ -26964,6 +26964,11 @@ class Store:
                 "unreachable_arms_r165.json",
                 "RETIRED_UNREACHABLE_CONTRACT",
             ),
+            (
+                "negative_expectancy_arms_r168",
+                "negative_expectancy_arms_r168.json",
+                "FAILED_FORWARD_EXPECTANCY",
+            ),
         )
         key = f"chain-meme-account-loss-retirement/v1:{version}"
         existing = self.get_kv(key, {}) or {}

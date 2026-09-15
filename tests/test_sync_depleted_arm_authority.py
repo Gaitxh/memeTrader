@@ -56,7 +56,7 @@ def test_merge_is_latched_idempotent_and_excludes_other_lifecycle_controls():
     updated, added = sync.merge_candidates(authority, candidates, {"dominated"})
     assert [item["arm_id"] for item in added] == ["newly-depleted"]
     assert updated["count"] == 2
-    assert added[0]["account_snapshot_id"] == 4
+    assert set(added[0]) == {"arm_id", "cash_usd", "observed_at"}
     again, second = sync.merge_candidates(updated, candidates, {"dominated"})
     assert second == []
     assert again == updated
