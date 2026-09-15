@@ -3210,6 +3210,12 @@ class Runtime:
             ),
         }
         if self.chain_meme_trader_only:
+            retry_now = utcnow()
+            retry_after = getattr(self, "_generic_hydration_retry_after", None)
+            allow_generic_retry = retry_after is None or retry_now >= retry_after
+            due_kwargs["retry_limit"] = 3 if allow_generic_retry else 0
+            if allow_generic_retry:
+                self._generic_hydration_retry_after = retry_now + timedelta(seconds=30)
             # The API accepts 30 addresses per chain. A global 30-row selection
             # followed by a chain split produced mostly tiny requests and left
             # the free batch capacity idle.

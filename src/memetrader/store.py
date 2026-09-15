@@ -9863,6 +9863,7 @@ class Store:
         prefer_fresh: bool = False,
         priority_token_ids: Iterable[str] = (),
         followup_limit: int = 0,
+        retry_limit: int = 3,
     ) -> list[sqlite3.Row]:
         due_at = iso(parse_time(now or utcnow()))
         selected_chains = tuple(dict.fromkeys(
@@ -9942,13 +9943,14 @@ class Store:
                 ) THEN 0 ELSE 1 END,
             """
             priority_params += priority_patterns
-        # First quotes are the shared input to every strategy. They consume the
-        # batch before lifecycle research; follow-ups only fill otherwise idle
-        # addresses in the same request budget.
+        # First quotes are the shared input to every strategy. Keep historical
+        # no-pair/error recovery out of this lane so an idle backlog cannot fill
+        # every batch after the fresh queue drains.
         available = max(0, min(300, int(limit)))
+        retry_limit = min(30, max(0, int(retry_limit)))
         base_sql = f"""
             SELECT * FROM token_detail_hydration
-            WHERE status IN ('pending','no_pair','error')
+            WHERE status IN ({{statuses}})
               AND followup_until IS NULL
               AND (next_attempt_at IS NULL OR next_attempt_at<=?)
               {chain_filter}
@@ -9968,11 +9970,18 @@ class Store:
         """
         params = (due_at, *chain_params, *priority_params)
 
-        def fetch(age_order: str, row_limit: int) -> list[sqlite3.Row]:
+        def fetch(
+            statuses: tuple[str, ...], age_order: str, row_limit: int,
+        ) -> list[sqlite3.Row]:
             if row_limit <= 0:
                 return []
             return list(self.db.execute(
-                base_sql.format(age_order=age_order), (*params, int(row_limit))))
+                base_sql.format(
+                    statuses=','.join('?' for _ in statuses),
+                    age_order=age_order,
+                ),
+                (*statuses, *params, int(row_limit)),
+            ))
 
         with self._lock:
             if not prefer_fresh or available < 5:
@@ -9981,7 +9990,7 @@ class Store:
                     "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC"
                     if prefer_fresh else "enqueued_at ASC"
                 )
-                selected = fetch(age_order, available)
+                selected = fetch(("pending",), age_order, available)
             else:
                 # A pure newest-first queue permanently starves an old backlog
                 # whenever discovery arrival exceeds hydration throughput. Keep
@@ -9992,12 +10001,14 @@ class Store:
                 oldest_quota = max(1, available // 5)
                 fresh_quota = available - oldest_quota
                 selected = fetch(
+                    ("pending",),
                     "COALESCE((SELECT first_seen_at FROM tokens AS token "
                     "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC",
                     fresh_quota,
                 )
                 selected_ids = {str(row["token_id"]) for row in selected}
                 oldest_candidates = fetch(
+                    ("pending",),
                     "enqueued_at ASC", oldest_quota + len(selected_ids),
                 )
                 selected.extend(
@@ -10005,8 +10016,14 @@ class Store:
                     if str(row["token_id"]) not in selected_ids
                 )
                 selected = selected[:available]
-            spare = max(0, min(300, int(limit)) - len(selected))
-            return selected + followups[:spare]
+            spare = max(0, available - len(selected))
+            selected.extend(followups[:spare])
+            spare = max(0, available - len(selected))
+            retries = fetch(
+                ("no_pair", "error"), "next_attempt_at,enqueued_at", min(spare, retry_limit),
+            )
+            selected.extend(retries)
+            return selected
 
     def mark_token_detail_hydration(
         self,
