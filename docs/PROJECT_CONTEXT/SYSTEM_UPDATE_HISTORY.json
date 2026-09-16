@@ -2,11 +2,23 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-continuous-optimization188",
+      "recorded_at": "2026-09-16T06:00:00Z",
+      "title": "金狗严格时点漏斗、全策略收敛与持仓取数延迟分解",
+      "problem": "本轮81地址与项目可复算92地址超集缺少同一精确成员文件，不能混用分母；可复算超集中大量地址停在评估未准入或安全/下一帧到期。held取数p95约6.44秒而应用退出仅约0.14秒，原总指标不能区分Runtime槽等待和传输/客户端等待。另确认187的0.0 trailing实际是成本后保本激活，不是入场激活。",
+      "change": "固化92地址超集的严格as-of漏斗和全策略复核；保持177个失败/耗尽/劣势/不可达策略的入场治理；修正187策略文案但不改已运行合同，也不新增参数臂；增加held Runtime槽等待、transport-with-client-wait、本地延后和apply/exit分段计时，不改变请求、并发、超时或池规则。",
+      "rationale": "later ATH、热门身份和卖后上涨不得回填；跨臂仓按Token/cohort聚类。当前队列0丢批且SQLite热查询正常，继续提高并发没有证据。先定位held长尾归属，再决定调度或上游修复。",
+      "validation": "36项定向测试与两个模块compileall通过。PID76880保持原资金期/Paper/Live锁部署；首17个自然held批次总取数p95 5.86秒，Runtime槽等待1.41秒、transport-with-client-wait 4.53秒、apply/exit 0.10秒。主尾初步属于传输/客户端内部等待；短样本不扩并发，也不把可观测性改动声称为提速。",
+      "scope": "Paper只读计时、研究报告与策略描述纠正；未改变资金期、账户、历史仓位、策略行为哈希、池门槛、核销证据、API容量或Live锁。",
+      "next": "trajectory187至少积累30个跨两个日期的独立成熟配对Token并报告去掉最大赢家结果；held分段数据确定长尾属于槽等待还是传输后才实施下一修复。",
+      "report": "docs/PROJECT_CONTEXT/CONTINUOUS_OPTIMIZATION188_20260916.md"
+    },
+    {
       "id": "20260916-continuous-optimization187",
       "recorded_at": "2026-09-16T04:36:00Z",
       "title": "热门金狗案例复核、行情队列去重与分链退出实验",
       "problem": "本轮约81个唯一热门地址仅65个能在当前库定位；旧案例主要卡在安全确认/下一有效帧。被动行情队列部署前累计丢弃约17.4%批次且等待p95约12.6秒，同一token/原池/observed_at缓存收据在排队期间重复进入昂贵计算。core183快退与runner在约152个Token后均为成熟负期望。",
-      "change": "只在尚未处理的队列内合并完全相同收据并保留feature-only到普通行情升级语义；修复0.0 trailing激活阈值；暂停10个成熟负期望臂的新入场；新增Solana早期runner、BSC/Robinhood早期快退、入场即启用15% trailing的runner三条独立1000U前向Paper臂，全部复用共享数据且不增加API请求。",
+      "change": "只在尚未处理的队列内合并完全相同收据并保留feature-only到普通行情升级语义；修复0.0 trailing激活阈值；暂停10个成熟负期望臂的新入场；新增Solana早期runner、BSC/Robinhood早期快退、成本后达到保本才启用15% trailing的runner三条独立1000U前向Paper臂，全部复用共享数据且不增加API请求。",
       "rationale": "当前主要可控瓶颈是本地队列重复工作而非免费API总额度。策略不再堆叠相似参数，而用分链和单变量退出配对回答明确问题；热门案例只作严格as-of覆盖与持有能力审计，不作买入白名单或未来信息。",
       "validation": "compileall及30项定向测试通过。PID78032保持原资金期运行，三臂共同激活于2026-09-16T04:34:35.717036Z、snapshot frontier=877704，激活前decision/position均0、初始账户各1000U。首个短窗口20批合并52条重复行情、0批丢弃、等待p95=4.20秒；仅作机制验收，不外推长期收益。",
       "scope": "共享被动行情计算队列、三个新Paper实验、失败策略入场治理与项目记忆；未改变池门槛/核销证据合同、滑点、已有仓位/历史、资金期或Live锁。",

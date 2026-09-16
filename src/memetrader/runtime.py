@@ -1780,10 +1780,15 @@ class Runtime:
         high_priority: bool = False,
         feature_only148: dict[str, str] | None = None,
         allow_shared_spares149: bool = False,
+        phase_timings: dict[str, Any] | None = None,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]] | None:
         """Share Dex cooldowns; None defers held work without claiming an HTTP result."""
         loop = asyncio.get_running_loop()
+        slot_started = loop.time()
         async with self._dex_quote_slot(high_priority=high_priority) as acquired:
+            if phase_timings is not None:
+                phase_timings["runtime_slot_wait_seconds"] = loop.time() - slot_started
+                phase_timings["runtime_slot_acquired"] = bool(acquired)
             if not acquired:
                 return None
             # ALPHA149: after the original slot is held and before the request is
@@ -1804,6 +1809,7 @@ class Runtime:
             if (allow_shared_spares149 and fresh and not high_priority and addresses and post151
                     and getattr(manager_alpha149, 'enabled', True)):
                 addresses, post_selected151, post_extras151 = post151.extend(chain, addresses, utcnow())
+            request_started = loop.time()
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
                     # httpx phase timeouts are not a wall-clock deadline: a
@@ -1868,6 +1874,13 @@ class Runtime:
                 if selected_alpha149 and manager_alpha149 is not None:
                     manager_alpha149.release(selected_alpha149, utcnow(), reason='failed_request')
                 raise
+            finally:
+                if phase_timings is not None:
+                    # Includes the collector's own in-flight arbitration. Keeping it separate
+                    # from the Runtime slot wait is enough to decide which layer owns a long tail.
+                    phase_timings["transport_with_client_wait_seconds"] = (
+                        loop.time() - request_started
+                    )
             # A peer request may have started cooling down while this one was in flight.
             if self._dex_quote_backoff_until <= loop.time():
                 self._dex_quote_failure_streak = 0
@@ -7677,16 +7690,38 @@ class Runtime:
             batch_started = asyncio.get_running_loop().time()
             timing = getattr(self, "runtime_timing", None)
             fetch_metric = "held_fetch" if high_priority else "observer_fetch_with_wait"
+            phase_timings: dict[str, Any] = {}
+
+            def observe_fetch_phases(*, transport_failed: bool = False) -> None:
+                if timing is None or not high_priority:
+                    return
+                slot_wait = phase_timings.get("runtime_slot_wait_seconds")
+                if slot_wait is not None:
+                    timing.observe(
+                        "held_runtime_slot_wait", float(slot_wait),
+                        items=int(bool(phase_timings.get("runtime_slot_acquired"))),
+                    )
+                transport = phase_timings.get("transport_with_client_wait_seconds")
+                if transport is not None:
+                    timing.observe(
+                        "held_transport_with_client_wait", float(transport),
+                        failures=int(transport_failed), items=len(chunk),
+                    )
+                elif phase_timings.get("runtime_slot_acquired") is False:
+                    timing.observe("held_runtime_slot_deferred", 0.0, items=len(chunk))
+
             if not high_priority:
                 await self._chain_meme_active_idle().wait()
             try:
                 quoted = await self._dex_batch_quote(
                     chain, [str(item["address"]) for item in chunk],
                     fresh=True, high_priority=high_priority,
+                    phase_timings=phase_timings,
                 )
             except DexLowPriorityCapacityDeferred:
                 return 0  # No observation, absence or provider failure occurred.
             except Exception as exc:
+                observe_fetch_phases(transport_failed=True)
                 batch_errors.append(type(exc).__name__)
                 if timing is not None:
                     timing.observe(fetch_metric, asyncio.get_running_loop().time()-batch_started, failures=1)
@@ -7722,6 +7757,7 @@ class Runtime:
                     recorded_at=utcnow(),
                 )
                 return 0
+            observe_fetch_phases()
             if quoted is None:
                 # A local cooldown is neither an empty quote nor a provider failure.
                 for item in chunk:

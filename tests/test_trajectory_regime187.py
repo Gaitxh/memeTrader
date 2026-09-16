@@ -47,6 +47,7 @@ def test_policies_are_additive_paper_only_and_change_only_declared_exit_field():
     armed = by_arm[ARMED_RUNNER_ARM]
     runner = parents[TRAJECTORY_ARMS[3]]
     assert armed["trailing_activate_return"] == 0.0
+    assert "after break-even" in armed["name"]
     assert armed["trailing_drawdown"] == runner["trailing_drawdown"] == 0.15
     assert armed["excess_return_vs_arm"] == ARMED_CONTROL
     assert all(by_arm[arm]["affects"] == "paper_only" for arm in ARMS)

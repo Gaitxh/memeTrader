@@ -24,7 +24,7 @@
 
 - 队列只合并尚未处理的完全相同收据；feature-only 后到普通行情时升级为普通处理，已处理历史不去重。
 - 修复 `trailing_activate_return=0.0` 被 `or 99.0` 错当成禁用的问题。
-- 新增三个各自 1000U 的 Paper 前向实验，不新增网络请求：Solana early runner、BSC/Robinhood early fast、入场即启用 15% trailing 的 runner。
+- 新增三个各自 1000U 的 Paper 前向实验，不新增网络请求：Solana early runner、BSC/Robinhood early fast、成本后曾达保本才启用 15% trailing 的 runner。
 - 三臂共同激活于 `2026-09-16T04:34:35.717036Z`，frontier snapshot `877704`；激活前决策/仓位均为 0。
 - 新进程 PID 78032，资金期不变。首个短窗口：合并 52 条重复收据，0/20 批丢弃，队列等待 p95 4.20 秒。该窗口只证明机制生效，不代表长期结果。
 - 约 10 分钟自然窗口累计 527 批、合并 452、丢弃 0，等待 p95 3.74 秒。Solana 两个新臂已共享首个自然机会并各开 20U，原池 mark 新鲜；只证明链路可达。
@@ -36,3 +36,5 @@
 - 后续按可比负载窗口观察：队列丢弃率、等待 p95、持仓行情年龄、首/二/三帧延迟；如持仓/待卖退化，先收缩低价值生命周期重试。
 - 新策略只按激活后 Token、链和孪生入口比较净收益、核销、洗出及右尾贡献。样本成熟后，负期望臂暂停新入场；不靠放宽池/身份/时序真实性来制造成交。
 - 证据入口：`docs/PROJECT_CONTEXT/CONTINUOUS_OPTIMIZATION187_20260916.md`、`docs/PROJECT_CONTEXT/EXPANDED_CASEBOOK156_20260914.md`、`scripts/audit_goal_cases156.py`、`data/research/goal_cases181/`。
+- Round 188 的范围边界、策略复核、成熟门和 held 延迟分解见 `memory/ROUND188.md` 与 `docs/PROJECT_CONTEXT/CONTINUOUS_OPTIMIZATION188_20260916.md`。
+- Round 188 已部署至 PID 76880；首 17 个 held 批次显示 p95 主要在 transport-with-client-wait（4.53 秒），槽等待 1.41 秒、apply/exit 0.10 秒。保持现有并发和请求预算，积累可比窗口后再决定上游/客户端修复。

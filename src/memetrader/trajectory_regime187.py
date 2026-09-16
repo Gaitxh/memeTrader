@@ -67,14 +67,18 @@ def policies(fast_parent: Mapping[str, Any], runner_parent: Mapping[str, Any]) -
             "preserves the five-minute exit. Existing shared frames only."
         ),
     )
-    armed = _clone(runner_parent, ARMED_RUNNER_ARM, "Early impulse runner, trailing armed at entry")
+    armed = _clone(
+        runner_parent, ARMED_RUNNER_ARM,
+        "Early impulse runner, trailing armed after break-even",
+    )
     armed.update(
         paired_opportunity_group="trajectory187_armed_runner",
         trailing_activate_return=0.0,
         excess_return_vs_arm=ARMED_CONTROL,
         description=(
             f"{VERSION}: same post-frontier signal, stop and horizon as {RUNNER_PARENT}; "
-            "the sole exit change is a 15% trailing drawdown armed from entry."
+            "the sole exit change is a 15% trailing drawdown armed after the running "
+            "economic return first reaches break-even."
         ),
     )
     return [solana, nonsol, armed]

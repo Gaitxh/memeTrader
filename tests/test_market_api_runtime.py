@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import timedelta
 import httpx
 import json
@@ -313,6 +314,7 @@ def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path
 def test_gecko_new_pool_cohort_batch_keeps_all_pools_and_reports_overflow(tmp_path, monkeypatch):
     async def scenario():
         runtime = make_runtime(tmp_path)
+        runtime.runtime_timing = RuntimeTiming()
         observed = utcnow()
         runtime._cohort_started_at = observed - timedelta(seconds=1)
         tokens = []
@@ -346,6 +348,14 @@ def test_gecko_new_pool_cohort_batch_keeps_all_pools_and_reports_overflow(tmp_pa
         assert all(snapshot.observed_at == observed for _, snapshot in batch)
         for _ in range(16):
             runtime._remember_pattern_quotes({"one": batch[0]})
+        assert len(runtime._cohort_batches) == 1
+        assert runtime.runtime_timing.snapshot()["passive_queue"]["coalesced_quotes"] == 16
+        token, original = batch[0]
+        for index in range(16):
+            snapshot = deepcopy(original)
+            snapshot.observed_at = observed + timedelta(seconds=index + 1)
+            snapshot.ingested_at = snapshot.observed_at
+            runtime._remember_pattern_quotes({"one": (token, snapshot)})
         assert len(runtime._cohort_batches) == 16
         assert runtime._cohort_dropped_batches == 1
         assert runtime._cohort_dropped_quotes == 13

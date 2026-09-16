@@ -18,7 +18,7 @@
 - 新增三条独立 Paper 臂，全部复用 trajectory144 已有信号和共享行情，不增加 API 调用：
   - `trajectory187_solana_runner_v1`：仅 Solana 的早期 impulse，保留 30 分钟 runner 退出。
   - `trajectory187_nonsol_fast_v1`：仅 BSC/Robinhood 的同类早期信号，保留 5 分钟快退。
-  - `trajectory187_armed_runner_v1`：同 runner 入口/止损/期限，唯一退出变化是从入场即启用 15% trailing。
+  - `trajectory187_armed_runner_v1`：同 runner 入口/止损/期限，唯一退出变化是成本后 running return 曾达保本后启用 15% trailing。
 - 根据成熟负期望证据暂停 10 个臂的新入场；历史、成交和已有仓位不改，已有仓位继续退出。
 
 ## 部署验证
