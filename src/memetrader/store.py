@@ -9962,7 +9962,34 @@ class Store:
         available = max(0, min(300, int(limit)))
         retry_limit = min(30, max(0, int(retry_limit)))
         reserved_followups = valid_followups[:available]
-        pending_available = max(0, available - len(reserved_followups))
+        reserved_retries = []
+        if prefer_fresh and selected_chains and available > len(reserved_followups):
+            # Pump create often precedes DEX indexing. Its 90/210-second retry
+            # is useless if a saturated pending lane can defer it indefinitely.
+            # Use one place in an already scheduled per-chain batch, even when
+            # the slower generic retry lane is on its 30-second cooldown.
+            recent_at = iso(parse_time(due_at) - timedelta(minutes=10))
+            with self._lock:
+                for chain in selected_chains:
+                    if len(reserved_followups) + len(reserved_retries) >= available:
+                        break
+                    retry = self.db.execute(
+                        "SELECT hydration.* FROM token_detail_hydration AS hydration "
+                        "WHERE hydration.status='no_pair' AND hydration.chain=? "
+                        "AND hydration.next_attempt_at>=? AND hydration.next_attempt_at<=? "
+                        "AND hydration.attempts IN (1,2) "
+                        "AND hydration.followup_until IS NULL "
+                        "AND EXISTS(SELECT 1 FROM token_launch_facts AS fact "
+                        "WHERE fact.token_id=hydration.token_id "
+                        "AND fact.launch_provider='pumpportal' "
+                        "AND fact.launch_surface='pump' AND fact.launch_event_type='create' "
+                        "AND fact.recorded_at>=? AND fact.recorded_at<=?) "
+                        "ORDER BY hydration.next_attempt_at,hydration.enqueued_at LIMIT 1",
+                        (chain, recent_at, due_at, recent_at, due_at),
+                    ).fetchone()
+                    if retry is not None:
+                        reserved_retries.append(retry)
+        pending_available = max(0, available - len(reserved_followups) - len(reserved_retries))
         base_sql = f"""
             SELECT * FROM token_detail_hydration
             WHERE status IN ({{statuses}})
@@ -10032,13 +10059,17 @@ class Store:
                 )
                 selected = selected[:pending_available]
             selected.extend(reserved_followups)
+            selected.extend(reserved_retries)
             spare = max(0, available - len(selected))
             selected.extend(lifecycle_retries[:spare])
             spare = max(0, available - len(selected))
+            reserved_ids = {str(row["token_id"]) for row in reserved_retries}
             retries = fetch(
-                ("no_pair", "error"), "next_attempt_at,enqueued_at", min(spare, retry_limit),
+                ("no_pair", "error"), "next_attempt_at,enqueued_at",
+                min(available, spare + len(reserved_ids), retry_limit + len(reserved_ids)),
             )
-            selected.extend(retries)
+            selected.extend(row for row in retries if str(row["token_id"]) not in reserved_ids)
+            selected = selected[:available]
             return selected
 
     def mark_token_detail_hydration(

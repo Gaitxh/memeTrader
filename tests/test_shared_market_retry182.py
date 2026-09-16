@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from memetrader.models import utcnow
+from memetrader.models import TokenCandidate, utcnow
 from memetrader.store import Store
 
 
@@ -105,4 +105,44 @@ def test_valid_followups_precede_bounded_lifecycle_missing_retries(tmp_path):
     )
     assert [row["status"] for row in retry_spare].count("hydrated") == 2
     assert [row["status"] for row in retry_spare].count("no_pair") == 2
+    store.close()
+
+
+def test_recent_pump_no_pair_retry_survives_saturated_fresh_lane(tmp_path):
+    store = Store(tmp_path / "pump-retry.sqlite3")
+    now = utcnow()
+    token = TokenCandidate(
+        chain="solana", address="P" * 32, name="Pump create",
+        source="pumpportal:create", first_seen_at=now,
+    )
+    store.enqueue_token_detail_hydration("solana", token.address, enqueued_at=now)
+    assert store.record_token_launch_fact(token, observed_at=now, ingested_at=now)
+    first_attempt = now + timedelta(seconds=1)
+    store.mark_token_detail_hydration(token.token_id, "no_pair", now=first_attempt)
+    for index in range(6):
+        store.enqueue_token_detail_hydration(
+            "solana", f"fresh-{index}", enqueued_at=now + timedelta(seconds=2),
+        )
+
+    before_due = store.due_token_detail_hydrations(
+        limit=4, now=first_attempt + timedelta(seconds=89),
+        chains=("solana",), prefer_fresh=True, retry_limit=0,
+    )
+    assert all(row["status"] == "pending" for row in before_due)
+    at_due = store.due_token_detail_hydrations(
+        limit=4, now=first_attempt + timedelta(seconds=90),
+        chains=("solana",), prefer_fresh=True, retry_limit=0,
+    )
+    assert len(at_due) == 4
+    assert [row["token_id"] for row in at_due].count(token.token_id) == 1
+    assert sum(row["status"] == "pending" for row in at_due) == 3
+
+    store.mark_token_detail_hydration(
+        token.token_id, "no_pair", now=first_attempt + timedelta(seconds=90),
+    )
+    second_due = store.due_token_detail_hydrations(
+        limit=4, now=first_attempt + timedelta(seconds=300),
+        chains=("solana",), prefer_fresh=True, retry_limit=0,
+    )
+    assert [row["token_id"] for row in second_due].count(token.token_id) == 1
     store.close()
