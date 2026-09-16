@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-old-pool-activity-tempo193-paper",
+      "recorded_at": "2026-09-16T11:50:00Z",
+      "title": "新增老池活跃突变Paper策略并按新前沿启动",
+      "problem": "现有老池复苏策略需要本地多帧轨迹且有六小时池龄门槛；部分同帧已能看到的短窗成交加速没有独立入场试验。",
+      "change": "只用已有Dex/Gecko原池行情的m5/h1买卖、成交额、价格变化与流动性新增activity193单帧候选，沿用共享安全与下一独立报价成交路径；补充Gecko原载荷已有h1字段的读取。",
+      "rationale": "池龄至少一小时且短窗笔数相对前55分钟达到三倍，是可前向验证的老池新活动假设；不新增接口、不放松原池底线或卖出能力检查，也不对白名单样本回填买单。",
+      "validation": "提交b58061e已推送；新旧相关10项测试通过。Paper PID36332于11:48:26Z加载499臂，193新臂从快照930040激活；3个源码哈希匹配，原资金期不变、Live锁定，首读快照到930112。11:49 UTC新臂自然订单0、仓位0，盈利尚未证明。旧cohort测试存在与本次无关的12对32断言失败。",
+      "scope": "追加单个Paper策略与已有字段解析，不改变旧策略/持仓/成交/资金，不新增外部请求、研究定时或实盘。",
+      "next": "按独立Token统计自然信号、拒绝原因、下一报价成交、净收益和原池核销；观察同负载实时性后决定保留、修订或暂停。",
+      "report": "docs/PROJECT_CONTEXT/ACTIVITY_TEMPO193_FORWARD_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ACTIVITY_TEMPO193_FORWARD_20260916.md"
+    },
+    {
       "id": "20260916-first-frame-funnel-and-paired-exit-risk",
       "recorded_at": "2026-09-16T11:35:16Z",
       "title": "233个新币的首帧转化与144同入场快慢退出风险复核",
