@@ -41,7 +41,9 @@ def addresses_from_text(text):
 
 def candidate_ids(address):
     if address.startswith('0x'):
-        return [chain + ':' + address.lower() for chain in ('bsc', 'robinhood')]
+        # Lookup candidates only. The stored token row, not address syntax,
+        # establishes a locally known chain identity.
+        return [chain + ':' + address.lower() for chain in ('bsc', 'base', 'robinhood')]
     return ['solana:' + address]
 
 
@@ -475,7 +477,7 @@ def markdown(report):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--addresses-file', type=Path)
+    parser.add_argument('--addresses-file', type=Path, action='append')
     parser.add_argument('--report-json', type=Path,
         help='Re-render an existing frozen audit without querying the live database')
     parser.add_argument('--output-dir', required=True, type=Path)
@@ -491,7 +493,7 @@ if __name__ == '__main__':
         raise SystemExit(0)
     if args.addresses_file is None:
         parser.error('--addresses-file is required unless --report-json is given')
-    text = args.addresses_file.read_text(encoding='utf-8-sig')
+    text = '\n'.join(path.read_text(encoding='utf-8-sig') for path in args.addresses_file)
     addresses = addresses_from_text(text)
     config = json.loads((ROOT / 'config.json').read_text(encoding='utf-8-sig'))
     database = (ROOT / config['database']).resolve()

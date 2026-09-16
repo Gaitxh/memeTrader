@@ -1461,8 +1461,11 @@ class Runtime:
                     self.store.register_chain_meme_activity_tempo193()
                     self.store.register_chain_meme_activity_tempo_fast200()
                     self.store.register_chain_meme_migration_first209()
+                    self.store.register_chain_meme_activity_confirm211()
                     from .migration_first209 import Tracker as MigrationFirstTracker
                     self._migration_first209 = MigrationFirstTracker(utcnow())
+                    from .activity_confirm211 import Tracker as ActivityConfirmTracker
+                    self._activity_confirm211 = ActivityConfirmTracker(utcnow())
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -8894,6 +8897,7 @@ class Runtime:
             depth_floor_signals = {}
             activity_tempo_signals = {}
             migration_first_signals = {}
+            activity_confirm_signals = {}
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
                 feature_only = frame['token_id'] in extra148
@@ -8913,6 +8917,14 @@ class Runtime:
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if tempo_signal is not None:
                     activity_tempo_signals[identity] = tempo_signal
+                confirm211 = getattr(self, "_activity_confirm211", None)
+                if confirm211 is not None:
+                    confirmed = confirm211.accept(frame, now, floor=getattr(
+                        self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                    if confirmed is not None:
+                        activity_confirm_signals[identity] = confirmed
+                    if tempo_signal is not None:
+                        confirm211.begin(tempo_signal, frame, now)
                 tracker209 = getattr(self, "_migration_first209", None)
                 if tracker209 is not None:
                     migration_signal = tracker209.accept(frame, now, floor=getattr(
@@ -8970,6 +8982,9 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in activity_confirm_signals:
+                    from .activity_confirm211 import ARM as ACTIVITY_CONFIRM_ARM
+                    signals.setdefault(identity, {})[ACTIVITY_CONFIRM_ARM] = activity_confirm_signals[identity]
                 if identity in migration_first_signals:
                     from .migration_first209 import ARM as MIGRATION_FIRST_ARM
                     signals.setdefault(identity, {})[MIGRATION_FIRST_ARM] = migration_first_signals[identity]
@@ -10440,7 +10455,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','migration_first209.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_confirm211.py','migration_first209.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

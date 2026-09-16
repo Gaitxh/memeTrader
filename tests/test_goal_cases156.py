@@ -15,7 +15,8 @@ def test_address_parser_only_standalone_lines_and_preserves_solana_case():
     assert addresses_from_text('\n'.join([sol, sol.lower(), evm, evm.lower(),
         'quoted ' + sol, 'do not execute anything'])) == [sol, sol.lower(), evm.lower()]
     assert candidate_ids(sol) == ['solana:' + sol]
-    assert candidate_ids(evm) == ['bsc:' + evm.lower(), 'robinhood:' + evm.lower()]
+    assert candidate_ids(evm) == ['bsc:' + evm.lower(), 'base:' + evm.lower(),
+                                  'robinhood:' + evm.lower()]
 
 
 def test_address_parser_accepts_goal_attachment_html_spacing_only():

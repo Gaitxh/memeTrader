@@ -27407,6 +27407,24 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_activity_confirm211(self) -> int:
+        """Append a distinct-frame persistence test for the old-pool tempo entry."""
+        from .activity_confirm211 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162
