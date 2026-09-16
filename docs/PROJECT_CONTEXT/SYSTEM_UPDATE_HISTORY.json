@@ -2,6 +2,23 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-dex-phase-observer-recovery197",
+      "recorded_at": "2026-09-16T14:50:00Z",
+      "title": "定位Dex分段耗时并修复关注观察循环的空时间戳崩溃",
+      "problem": "冻结信号后帧仍迟到；观察循环13次调用中10次失败，回溯显示报价的可选ingested_at为空时抛出TypeError，整轮状态更新中断。此前请求耗时混合了槽位、节流与HTTP等待。",
+      "change": "在现有性能快照中有界记录各Dex请求阶段耗时；观察到新帧时以本地observed_at相对信号时间判定，ingested_at存在时再校验，不因缺失可选字段崩溃。",
+      "rationale": "恢复已经取得报价的观察处理，并区分等待层；不增加请求、交易前置条件或使用后见数据。",
+      "validation": "14项Dex定向测试与24项共享批次测试通过。前一进程14次紧急后续请求中6次失败，滚动p95总耗时17.547秒；新Paper进程首次22秒内观察循环3次/失败0次，有1条自然信号被标记采到信号后新帧。",
+      "scope": "Paper共享Dex性能诊断与模式观察循环；不改原池判定、账户、资金、Live或历史成交。",
+      "status": "代码、测试、部署与短窗自然无崩溃已验证；整体按时原池后帧转化和盈利仍待验证",
+      "next": "按独立Token核对按时原池报价、安全终点、源BUY与成本后退出；对比分阶段延迟和持仓报价年龄，继续修复被实测证明的瓶颈。",
+      "report": "docs/PROJECT_CONTEXT/DEX_PHASE_AND_OBSERVER_RECOVERY197_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/DEX_PHASE_AND_OBSERVER_RECOVERY197_20260916.md",
+      "commits": ["aef4ba3", "2d3dcbd"],
+      "runtime_verification": "Paper PID97276；499策略、原1000U资金期、源码哈希匹配；health/live/performance正常，Live锁定。",
+      "rollback": "仅按实测退化回退本阶段对应源码，保留原有资金期、自然记录和报告。"
+    },
+    {
       "id": "20260916-dex-frozen-followup-scheduling196",
       "recorded_at": "2026-09-16T14:31:21Z",
       "title": "修复冻结信号后帧的容量饥饿与连接回退",
