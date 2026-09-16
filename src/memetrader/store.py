@@ -1061,6 +1061,8 @@ class Store:
                     affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
                     UNIQUE(definition_version,chain,dex_id,pair_address)
                 );
+                CREATE INDEX IF NOT EXISTS liquidity_survival_cohorts_token_idx
+                    ON liquidity_survival_cohorts(token_id,id);
                 CREATE TABLE IF NOT EXISTS liquidity_survival_targets (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -5022,6 +5024,8 @@ class Store:
                     FOREIGN KEY(universe_cohort_id) REFERENCES token_universe_forward_cohorts(id),
                     FOREIGN KEY(trigger_snapshot_id) REFERENCES token_snapshots(id)
                 );
+                CREATE INDEX IF NOT EXISTS onchain_only_shadow_cohorts_token_idx
+                    ON onchain_only_shadow_cohorts(token_id,id);
                 CREATE TABLE IF NOT EXISTS onchain_only_shadow_results (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -9476,41 +9480,47 @@ class Store:
 
         outcome = self.db.execute(
             """
+            WITH prior AS MATERIALIZED (
+                SELECT token_id FROM token_launch_facts
+                WHERE definition_version=? AND launch_event_type='create'
+                  AND creator_address=? AND id<? AND recorded_at<?
+            )
             SELECT COUNT(*) AS terminal_count,
                    SUM(r.terminal_status='observed') AS observed_count,
                    SUM(r.terminal_status='observed' AND r.raw_return>0) AS positive_count
-            FROM onchain_only_shadow_results r
-            JOIN onchain_only_shadow_cohorts c ON c.id=r.cohort_id
-            JOIN token_launch_facts p ON p.token_id=c.token_id
+            FROM prior p
+            CROSS JOIN onchain_only_shadow_cohorts c
+            CROSS JOIN onchain_only_shadow_results r
             WHERE r.definition_version=? AND r.horizon_minutes=240
-              AND r.recorded_at<=? AND p.definition_version=?
-              AND p.launch_event_type='create' AND p.creator_address=?
-              AND p.id<? AND p.recorded_at<?
+              AND r.recorded_at<=? AND c.token_id=p.token_id AND r.cohort_id=c.id
             """,
             (
-                self.ONCHAIN_ONLY_SHADOW_VERSION, iso(cutoff),
                 self.TOKEN_LAUNCH_FACT_VERSION, str(fact["creator_address"]),
                 int(fact["id"]), iso(cutoff),
+                self.ONCHAIN_ONLY_SHADOW_VERSION, iso(cutoff),
             ),
         ).fetchone()
         liquidity = self.db.execute(
             """
+            WITH prior AS MATERIALIZED (
+                SELECT token_id FROM token_launch_facts
+                WHERE definition_version=? AND launch_event_type='create'
+                  AND creator_address=? AND id<? AND recorded_at<?
+            )
             SELECT COUNT(*) AS terminal_count,
                    SUM(o.status='observed' AND o.failure_mode='survived') AS survived_count,
                    SUM(o.status='observed' AND o.failure_mode='liquidity_collapse_unclassified')
                        AS collapse_count
-            FROM liquidity_survival_outcomes o
-            JOIN liquidity_survival_cohorts c ON c.id=o.cohort_id
-            JOIN token_launch_facts p ON p.token_id=c.token_id
+            FROM prior p
+            CROSS JOIN liquidity_survival_cohorts c
+            CROSS JOIN liquidity_survival_outcomes o
             WHERE o.definition_version=? AND o.horizon_minutes=60
-              AND o.recorded_at<=? AND p.definition_version=?
-              AND p.launch_event_type='create' AND p.creator_address=?
-              AND p.id<? AND p.recorded_at<?
+              AND o.recorded_at<=? AND c.token_id=p.token_id AND o.cohort_id=c.id
             """,
             (
-                self.LIQUIDITY_SURVIVAL_VERSION, iso(cutoff),
                 self.TOKEN_LAUNCH_FACT_VERSION, str(fact["creator_address"]),
                 int(fact["id"]), iso(cutoff),
+                self.LIQUIDITY_SURVIVAL_VERSION, iso(cutoff),
             ),
         ).fetchone()
         self.db.execute(
