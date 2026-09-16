@@ -1455,6 +1455,7 @@ class Runtime:
                     self.store.register_chain_meme_trajectory_regime187()
                     self.store.register_chain_meme_trajectory_exit190()
                     self.store.register_chain_meme_depth_cross191()
+                    self.store.register_chain_meme_activity_tempo193()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -8527,6 +8528,7 @@ class Runtime:
     async def chain_meme_cohort_observer_once(self) -> None:
         from .cohort_experiments import consume_passive_cohort_batch
         from .dex_trajectory import Engine
+        from .activity_tempo193 import ARM as ACTIVITY_TEMPO_ARM, interval_fields
         if not hasattr(self.store, '_dex_trajectory'):
             self.store._dex_trajectory = Engine(utcnow())
         trajectory = self.store._dex_trajectory
@@ -8540,6 +8542,10 @@ class Runtime:
             from .depth_cross191 import Tracker as DepthCrossTracker
             self.store._depth_cross191 = DepthCrossTracker(utcnow())
         depth_cross191 = self.store._depth_cross191
+        if not hasattr(self.store, '_activity_tempo193'):
+            from .activity_tempo193 import Tracker as ActivityTempoTracker
+            self.store._activity_tempo193 = ActivityTempoTracker(utcnow())
+        activity_tempo193 = self.store._activity_tempo193
         # ALPHA149: the isolated engine for the alpha149_* arms must be fed the
         # same observed frames as the other trajectory engines, otherwise its
         # pools stay empty and every alpha149 entry waits forever on
@@ -8813,6 +8819,7 @@ class Runtime:
                     while len(_mover_cache) > MOVER_QUOTE_CACHE:
                         _mover_cache.pop(next(iter(_mover_cache)))
                 # This is local first observation, not a claimed global creation time.
+                activity_intervals = interval_fields(pair)
                 frames.append({"token_id": token.token_id, "pair_address": address, "chain": token.chain,
                     "lifecycle": "early" if age < 900 else "growth" if age < 21600 else "mature",
                     "normalized_symbol": (token.symbol or "").strip().casefold(),
@@ -8820,9 +8827,7 @@ class Runtime:
                     "discovered_at": first_seen, "original_pool": True,
                     "price_usd": snapshot.price_usd, "liquidity_usd": snapshot.liquidity_usd,
                     "volume_5m_usd": snapshot.volume_5m_usd,
-                    "volume_1h_usd": (pair.get('volume') or {}).get('h1'),
-                    "buys_1h": ((pair.get('txns') or {}).get('h1') or {}).get('buys'),
-                    "sells_1h": ((pair.get('txns') or {}).get('h1') or {}).get('sells'),
+                    **activity_intervals,
                     "fdv_usd": pair.get('fdv'), "provider": snapshot.provider,
                     # Queue admission is an actual local receipt clock. Legacy
                     # Dex objects omit ingested_at until their Store insertion.
@@ -8837,6 +8842,7 @@ class Runtime:
             now = utcnow()
             fresh_trajectory = set(); fresh144=set(); fresh149=set(); extra148_signals={}; delayed148=[]
             depth_cross_signals = {}
+            activity_tempo_signals = {}
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
                 feature_only = frame['token_id'] in extra148
@@ -8848,6 +8854,10 @@ class Runtime:
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if cross_signal is not None:
                     depth_cross_signals[identity] = cross_signal
+                tempo_signal = activity_tempo193.accept(frame, now, floor=getattr(
+                    self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                if tempo_signal is not None:
+                    activity_tempo_signals[identity] = tempo_signal
                 accepted144 = trajectory144.accept(frame,now)
                 if accepted144 is not None:
                     fresh144.add(identity)
@@ -8899,6 +8909,8 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in activity_tempo_signals:
+                    signals.setdefault(identity, {})[ACTIVITY_TEMPO_ARM] = activity_tempo_signals[identity]
                 if identity in depth_cross_signals:
                     from .depth_cross191 import ARMS as DEPTH_CROSS_ARMS
                     for arm in DEPTH_CROSS_ARMS:
@@ -10251,7 +10263,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','activity_tempo193.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',
