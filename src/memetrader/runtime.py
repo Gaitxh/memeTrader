@@ -1452,6 +1452,7 @@ class Runtime:
                     # approximation when optional security APIs yield no usable fact.
                     self.store.register_chain_meme_righttail_recovery152_experiments()
                     self.store.register_chain_meme_core_portfolio183()
+                    self.store.register_chain_meme_trajectory_regime187()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -8009,21 +8010,76 @@ class Runtime:
         if quoted and hasattr(self, "_cohort_started_at"):
             if not hasattr(self, "_cohort_batches"):
                 self._cohort_batches = deque(maxlen=16)
+            if not hasattr(self, "_cohort_queued_receipts"):
+                self._cohort_queued_receipts = {}
+            queued = self._cohort_queued_receipts
+
+            def receipt_key(value):
+                token, snapshot = value
+                raw = snapshot.raw or {}
+                pair = raw.get("pair", raw)
+                pool = canonical_token_address(
+                    token.chain, str(pair.get("pairAddress") or ""),
+                )
+                observed = getattr(snapshot, "observed_at", None)
+                if not pool or observed is None:
+                    return None
+                return token.token_id, pool, iso(observed)
+
+            def forget_batch(batch):
+                values = batch[1]
+                for value in values:
+                    key = receipt_key(value)
+                    indexed = queued.get(key) if key is not None else None
+                    if indexed is not None and indexed[0] is values:
+                        queued.pop(key, None)
+
+            incoming = list(quoted.values())[:200]
+            values = []
+            retained_feature_only = {}
+            coalesced = normal_takeovers = 0
+            for value in incoming:
+                token, snapshot = value
+                key = receipt_key(value)
+                existing = queued.get(key) if key is not None else None
+                incoming_feature_only = token.token_id in feature_only148
+                if existing is not None:
+                    existing_values, existing_index, existing_features = existing
+                    was_feature_only = token.token_id in existing_features
+                    existing_values[existing_index] = value
+                    if was_feature_only and not incoming_feature_only:
+                        existing_features.pop(token.token_id, None)
+                        normal_takeovers += 1
+                    elif was_feature_only and incoming_feature_only:
+                        existing_features[token.token_id] = feature_only148[token.token_id]
+                    coalesced += 1
+                    continue
+                index = len(values)
+                values.append(value)
+                if incoming_feature_only:
+                    retained_feature_only[token.token_id] = feature_only148[token.token_id]
+                if key is not None:
+                    queued[key] = (values, index, retained_feature_only)
+
             # References only; the low-priority worker does parsing and calculation.
             dropped_quotes = None
-            if len(self._cohort_batches) == self._cohort_batches.maxlen:
+            if values and len(self._cohort_batches) == self._cohort_batches.maxlen:
                 dropped_quotes = len(self._cohort_batches[0][1])
                 self._cohort_dropped_batches = getattr(self, "_cohort_dropped_batches", 0) + 1
                 self._cohort_dropped_quotes = (
                     getattr(self, "_cohort_dropped_quotes", 0) + dropped_quotes
                 )
-            values = list(quoted.values())[:200]
-            self._cohort_batches.append((current, values, feature_only148) if feature_only148 else (current, values))
+                forget_batch(self._cohort_batches.popleft())
+            if values:
+                self._cohort_batches.append((current, values, retained_feature_only))
             if hasattr(self, "runtime_timing"):
                 self.runtime_timing.observe_passive_queue(
                     depth=len(self._cohort_batches),
-                    oldest_received_at=self._cohort_batches[0][0],
-                    enqueued=True, dropped_quotes=dropped_quotes)
+                    oldest_received_at=(self._cohort_batches[0][0]
+                                        if self._cohort_batches else None),
+                    enqueued=bool(values), dropped_quotes=dropped_quotes,
+                    coalesced_quotes=coalesced,
+                    normal_takeovers=normal_takeovers)
         # Transport-owned tags, never provider raw_json, delimit feature-only work.
         quoted = {k: value for k, value in quoted.items() if k not in feature_only148}
         # MOVER RESERVED ADMISSION (round 108): put flagged tokens at the head of the candidate
@@ -8605,6 +8661,20 @@ class Runtime:
         deferred148 = []
         for _ in range(min(len(batches or ()), 8)):
             batch = batches.popleft()
+            queued = getattr(self, "_cohort_queued_receipts", {})
+            batch_values = batch[1]
+            for value in batch_values:
+                token, snapshot = value
+                raw = snapshot.raw or {}
+                pair = raw.get("pair", raw)
+                pool = canonical_token_address(
+                    token.chain, str(pair.get("pairAddress") or ""),
+                )
+                key = ((token.token_id, pool, iso(snapshot.observed_at))
+                       if pool and snapshot.observed_at is not None else None)
+                indexed = queued.get(key) if key is not None else None
+                if indexed is not None and indexed[0] is batch_values:
+                    queued.pop(key, None)
             received, values = batch[:2]
             extra148 = batch[2] if len(batch) > 2 else {}
             if hasattr(self, "runtime_timing"):
@@ -10114,7 +10184,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

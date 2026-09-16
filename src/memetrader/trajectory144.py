@@ -191,7 +191,8 @@ class Engine:
             if arm in state.get("signals", {}) and 0 <= (now-parse_time(state["signals"][arm]["recorded_at"])).total_seconds()<=60:
                 out[arm] = deepcopy(state["signals"][arm])
         from .trend_moonbag169 import alias_signals
-        return alias_signals(out)
+        from .trajectory_regime187 import alias_signals as alias_regime187
+        return alias_regime187(alias_signals(out))
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}

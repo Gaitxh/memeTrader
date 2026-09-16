@@ -125,7 +125,8 @@ def test_passive_queue_bounds_wait_samples_and_retains_loss_counters():
         timing.observe(f"component_{index}", 1)
     received = datetime.fromisoformat("2026-09-08T07:00:00+00:00")
     timing.observe_passive_queue(depth=16, oldest_received_at=received,
-                                  enqueued=True, dropped_quotes=30)
+                                 enqueued=True, dropped_quotes=30,
+                                 coalesced_quotes=4, normal_takeovers=1)
     before = timing.snapshot()["passive_queue"]
     for value in range(MAX_SAMPLES + 5):
         timing.observe_passive_queue(depth=0, oldest_received_at=None, wait_seconds=value)
@@ -137,6 +138,8 @@ def test_passive_queue_bounds_wait_samples_and_retains_loss_counters():
     assert queue["processed_batches"] == MAX_SAMPLES + 5
     assert queue["dropped_batches"] == 1
     assert queue["dropped_quotes"] == 30
+    assert queue["coalesced_quotes"] == 4
+    assert queue["normal_takeovers"] == 1
     assert queue["enqueued_batches"] == 1
     assert queue["depth_batches"] == 0
     assert queue["max_depth_batches"] == 16

@@ -56,11 +56,14 @@ class RuntimeTiming:
             "depth_batches": 0, "max_depth_batches": 0,
             "enqueued_batches": 0, "processed_batches": 0,
             "dropped_batches": 0, "dropped_quotes": 0, "oldest_received_at": None,
+            "coalesced_quotes": 0, "normal_takeovers": 0,
         }
 
     def observe_passive_queue(self, *, depth: int, oldest_received_at: datetime | None,
                               enqueued: bool = False, dropped_quotes: int | None = None,
-                              wait_seconds: float | None = None) -> None:
+                              wait_seconds: float | None = None,
+                              coalesced_quotes: int = 0,
+                              normal_takeovers: int = 0) -> None:
         """Queue delay includes scheduler waits; no per-token history or extra I/O."""
         queue = self._passive_queue
         queue["depth_batches"] = depth
@@ -73,6 +76,8 @@ class RuntimeTiming:
         if wait_seconds is not None:
             queue["processed_batches"] += 1
             self._passive_waits.append(wait_seconds)
+        queue["coalesced_quotes"] += int(coalesced_quotes)
+        queue["normal_takeovers"] += int(normal_takeovers)
 
     def _retrieval_bucket(self, bucket: int) -> dict[str, Any]:
         if not self._retrieval or self._retrieval[-1]["timestamp"] != bucket:

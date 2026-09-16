@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-continuous-optimization187",
+      "recorded_at": "2026-09-16T04:36:00Z",
+      "title": "热门金狗案例复核、行情队列去重与分链退出实验",
+      "problem": "本轮约81个唯一热门地址仅65个能在当前库定位；旧案例主要卡在安全确认/下一有效帧。被动行情队列部署前累计丢弃约17.4%批次且等待p95约12.6秒，同一token/原池/observed_at缓存收据在排队期间重复进入昂贵计算。core183快退与runner在约152个Token后均为成熟负期望。",
+      "change": "只在尚未处理的队列内合并完全相同收据并保留feature-only到普通行情升级语义；修复0.0 trailing激活阈值；暂停10个成熟负期望臂的新入场；新增Solana早期runner、BSC/Robinhood早期快退、入场即启用15% trailing的runner三条独立1000U前向Paper臂，全部复用共享数据且不增加API请求。",
+      "rationale": "当前主要可控瓶颈是本地队列重复工作而非免费API总额度。策略不再堆叠相似参数，而用分链和单变量退出配对回答明确问题；热门案例只作严格as-of覆盖与持有能力审计，不作买入白名单或未来信息。",
+      "validation": "compileall及30项定向测试通过。PID78032保持原资金期运行，三臂共同激活于2026-09-16T04:34:35.717036Z、snapshot frontier=877704，激活前decision/position均0、初始账户各1000U。首个短窗口20批合并52条重复行情、0批丢弃、等待p95=4.20秒；仅作机制验收，不外推长期收益。",
+      "scope": "共享被动行情计算队列、三个新Paper实验、失败策略入场治理与项目记忆；未改变池门槛/核销证据合同、滑点、已有仓位/历史、资金期或Live锁。",
+      "next": "按可比负载持续看队列丢弃、等待、持仓mark年龄和连续帧；按Token/链比较三臂净收益、核销、洗出和右尾集中度。对16个未命中地址分类覆盖缺口，不为单一策略新增拖慢共享底座的接口。",
+      "report": "docs/PROJECT_CONTEXT/CONTINUOUS_OPTIMIZATION187_20260916.md"
+    },
+    {
       "id": "20260916-dex-discovery-freshness186",
       "recorded_at": "2026-09-15T17:08:34Z",
       "title": "Dex发现新鲜度与系统效率权衡：撤回并发，保留30秒缓存",

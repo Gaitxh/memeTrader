@@ -27147,6 +27147,39 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_trajectory_regime187(self) -> int:
+        """Append three compact aliases over existing trajectory144 signals."""
+        from .trajectory_regime187 import ARMS, FAST_PARENT, RUNNER_PARENT, policies
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {
+                str(policy.get("arm_id") or ""): policy
+                for policy in definition["policies"]
+            }
+            if FAST_PARENT not in by_arm or RUNNER_PARENT not in by_arm:
+                return 0
+            at = utcnow()
+            added = 0
+            for policy in policies(by_arm[FAST_PARENT], by_arm[RUNNER_PARENT]):
+                if policy["arm_id"] not in ARMS:
+                    continue
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?",
+                    (version, policy["arm_id"]),
+                ).fetchone() is not None:
+                    continue
+                self.append_chain_meme_trader_policy(policy, activated_at=at)
+                added += 1
+            return added
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162
@@ -35955,6 +35988,11 @@ class Store:
                 return False
         return True
 
+    @staticmethod
+    def _chain_meme_trailing_activation(policy: Mapping[str, Any]) -> float:
+        value = policy.get("trailing_activate_return")
+        return 99.0 if value is None else float(value)
+
     def evaluate_chain_meme_trader_market_marks(
         self, *, definition_version: str | None = None, now: Any = None,
         token_ids: Iterable[str] | None = None,
@@ -36348,9 +36386,7 @@ class Store:
                                 or int(position["principal_recovered"] or 0) == 1
                             )
                             and high_economic_return is not None
-                            and high_economic_return >= float(
-                                policy.get("trailing_activate_return") or 99.0
-                            )
+                            and high_economic_return >= self._chain_meme_trailing_activation(policy)
                             and drawdown <= -float(
                                 policy.get("dex_positive_trailing_drawdown")
                                 if (
