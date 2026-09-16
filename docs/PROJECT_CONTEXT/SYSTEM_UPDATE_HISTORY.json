@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-migration-first-quote209",
+      "recorded_at": "2026-09-16T18:15:00Z",
+      "title": "新增迁移后首个可交易池报价模拟策略，并收录追加样本",
+      "problem": "迁移后首个Pumpswap池可能晚于旧曲线报价，现有多帧策略未必检验首个真实可交易报价的早入场机会；用户另补充56行样本。",
+      "change": "新增独立Paper臂209，仅用本地已收到迁移事实及当前Dex同币同池新报价生成信号；保留安全、1000U原池门槛、下一帧成交和原退出合同。新样本保留原顺序和重复。",
+      "rationale": "以独立可追踪账户检验迁移早入场，既不把事后热门地址做白名单，也不借PumpPortal池标签伪称精确成交池。",
+      "validation": "新臂和原迁移采集定向测试7项通过；PID95004载入三个相关源码哈希，503臂、原资金期、Paper运行且Live锁定，快照975333推进至975643。截止时209自然决策/成交/仓位均为0；一次重启后10秒Web live请求超时，随后正常返回。",
+      "scope": "独立新增策略和只读样本研究；未新增API、定时研究、实盘许可、历史回填或资金重置。",
+      "status": "已实现、工程验证并加载；自然效果和可比负载性能尚待观察，追加17个独立新样本仍需逐币复盘",
+      "next": "手动跟踪迁移事实到新池报价、安全、下一帧成交、成本及退出，与同期普通/失败迁移币比较；补17个新增样本时间线。",
+      "report": "docs/PROJECT_CONTEXT/MIGRATION_FIRST_QUOTE209_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/MIGRATION_FIRST_QUOTE209_20260917.md",
+      "runtime_verification": "2026-09-16约18:14Z PID95004；/api/performance与随后/api/live可读；未宣称盈利。"
+    },
+    {
       "id": "20260917-migration-pool-followup208",
       "recorded_at": "2026-09-16T17:58:00Z",
       "title": "迁移币旧曲线池补采改按迁移回执限时跟踪",

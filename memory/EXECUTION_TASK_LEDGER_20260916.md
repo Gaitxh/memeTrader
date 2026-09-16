@@ -4,6 +4,12 @@ Authority: the user's current chat request. `USER_EXECUTION_REQUEST_20260916.md`
 
 Status vocabulary: `VERIFIED` means inspected in the current runtime/data, `IMPLEMENTED` means code is present and a relevant engineering check passed, `PARTIAL` means a substantive gap remains, `PENDING_FORWARD` means natural post-activation outcomes have not matured, and `UNTESTED` means an idea has no deployment/evidence. No row implies proven profitability.
 
+### Stage 209 and new user sample increment, 2026-09-17
+
+R03/R10/R11: The newer 56-line sample list is preserved in `USER_ADDITIONAL_SAMPLES_20260917.txt`: 42 distinct literals, 17 genuinely new distinct keys beyond original Appendix A (20 new-key lines). Ten new keys have exact configured-chain local canonical token IDs; seven do not. They have not yet received 17 point-in-time case timelines or ordinary/failed controls. The original 24 unmatched keys received one paced current Dex search each: 22 exact token-side matches, two no exact result. This is present identity evidence only and does not close historical discovery gaps.
+
+R05/R06/R13/R17/R20: Independent `migration209_first_tradable_v1` Paper arm is appended and loaded after stage 208 acquisition follow-up. Seven focused migration/pregrad tests pass; policy activation at snapshot 975333 and runtime PID95004 hash-matched all three touched source modules. 503 arms, same funding, Paper true and Live locked. First post-activation snapshot frontier 975643; **zero natural 209 decisions/fills/positions**, so R08/R14/R18 remain PENDING_FORWARD. No extra API, schedule, Live or historical reset. Full rule, failure modes, API readback caveat and next manual control comparison: `docs/PROJECT_CONTEXT/MIGRATION_FIRST_QUOTE209_20260917.md`.
+
 ## User-requested full reread and independent scope check, 2026-09-17
 
 ### Migration-pool acquisition follow-up, stage 208

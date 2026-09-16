@@ -1460,6 +1460,9 @@ class Runtime:
                     self.store.register_chain_meme_depth_floor199()
                     self.store.register_chain_meme_activity_tempo193()
                     self.store.register_chain_meme_activity_tempo_fast200()
+                    self.store.register_chain_meme_migration_first209()
+                    from .migration_first209 import Tracker as MigrationFirstTracker
+                    self._migration_first209 = MigrationFirstTracker(utcnow())
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -2418,6 +2421,9 @@ class Runtime:
                 self._pregrad_watch = PregradWatch()
             fact = self.store.db.execute("SELECT * FROM token_launch_facts WHERE id=?", (fact_id,)).fetchone()
             now = utcnow()
+            tracker209 = getattr(self, "_migration_first209", None)
+            if tracker209 is not None:
+                tracker209.observe_fact(dict(fact), now)
             watch_result = self._pregrad_watch.observe_launch(dict(fact), now=now)
             if fact["launch_event_type"] == "migration" and 0 <= (now-parse_time(fact["recorded_at"])).total_seconds() < 30:
                 prior = self.store.get_kv("pregrad_migration_handoff:" + token.token_id)
@@ -8861,6 +8867,9 @@ class Runtime:
                 # This is local first observation, not a claimed global creation time.
                 activity_intervals = interval_fields(pair)
                 frames.append({"token_id": token.token_id, "pair_address": address, "chain": token.chain,
+                    "provider_chain_id": str(pair.get("chainId") or "").lower(),
+                    "provider_dex_id": str(pair.get("dexId") or "").lower(),
+                    "provider_base_address": (pair.get("baseToken") or {}).get("address"),
                     "lifecycle": "early" if age < 900 else "growth" if age < 21600 else "mature",
                     "normalized_symbol": (token.symbol or "").strip().casefold(),
                     "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received),
@@ -8884,6 +8893,7 @@ class Runtime:
             depth_cross_signals = {}
             depth_floor_signals = {}
             activity_tempo_signals = {}
+            migration_first_signals = {}
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
                 feature_only = frame['token_id'] in extra148
@@ -8903,6 +8913,12 @@ class Runtime:
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if tempo_signal is not None:
                     activity_tempo_signals[identity] = tempo_signal
+                tracker209 = getattr(self, "_migration_first209", None)
+                if tracker209 is not None:
+                    migration_signal = tracker209.accept(frame, now, floor=getattr(
+                        self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                    if migration_signal is not None:
+                        migration_first_signals[identity] = migration_signal
                 accepted144 = trajectory144.accept(frame,now)
                 if accepted144 is not None:
                     fresh144.add(identity)
@@ -8954,6 +8970,9 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in migration_first_signals:
+                    from .migration_first209 import ARM as MIGRATION_FIRST_ARM
+                    signals.setdefault(identity, {})[MIGRATION_FIRST_ARM] = migration_first_signals[identity]
                 if identity in activity_tempo_signals:
                     signals.setdefault(identity, {})[ACTIVITY_TEMPO_ARM] = activity_tempo_signals[identity]
                     from .activity_tempo_fast200 import ARM as ACTIVITY_FAST_ARM, alias_signal
@@ -10421,7 +10440,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','migration_first209.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

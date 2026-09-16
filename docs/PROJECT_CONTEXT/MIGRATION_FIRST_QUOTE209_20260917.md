@@ -1,0 +1,28 @@
+# Migration-first Paper arm and incremental sample audit (2026-09-17)
+
+## Observed problem and hypothesis
+
+The prior 94-key case audit found migration examples whose first token hydration returned a different, unliquidated curve pool. Stage 208 extended existing shared Dex token-address follow-up from the locally received migration clock. This stage tests a separate trading hypothesis: the first **locally available** DexScreener Pumpswap quote after such a migration may be more timely than requiring the trajectory engine's multi-frame confirmation. This is not a claim that migration predicts profit or that PumpPortal's `pool` label names the executable pair.
+
+The arm `migration209_first_tradable_v1` is appended in the existing Paper funding period, with its own 1000U account and a 20U ordinary entry. It receives a restart-local migration fact recorded after activation, then checks a DexScreener raw `chainId=solana`, `dexId=pumpswap`, exact `baseToken.address=token`, exact selected pair, valid ordered receipt clocks, migration-to-quote <=300s, pool age 0..300s, quote age <=30s, positive price, current effective >=1000U pool floor, >=2 m5 buys and >=1 m5 sell. It uses no new API, no user address list and no later price or peak. A signal does not execute at its trigger quote: the existing shared safety, cash, original-pool and next-observed Paper execution contract still decides whether an order can fill. A missing/stale/buy-only/other-pool quote does not grant a fill. Exit inherits the Solana runner's 30-minute horizon, -20% hard stop and 15% trailing drawdown; the existing pool-loss contract remains.
+
+This arm differs from the existing depth crossing (needs a prior numeric below-floor frame), multi-frame trajectory, and old-pool tempo. It may overlap other young-pool arms on one token; accounts are not independent market samples. Its bounded RAM tracker uses locally received facts and never reconstructs missed events after restart. It is an isolated Paper experiment, not automatic Live promotion.
+
+## Engineering and deployment evidence
+
+- Actual stored raw Dex snapshots include `strategy-observer:dexscreener` as provider and `pair.dexId=pumpswap`, `pair.chainId=solana`, and `pair.baseToken.address`. The tracker accepts the exact Dex source suffix and checks provider-side identity.
+- `tests/test_migration_first209.py` plus `tests/test_pregrad_runtime.py`: 7 passed. Cases reject future/old facts, wrong token/pool/chain/provider, missing sell or floor, stale quote; Store test proves the signal does not fill on the trigger frame and can fill on the next observed quote. This is engineering validation, not a natural fill.
+- Append-only activation: `2026-09-16T18:13:02.354797Z`, `activation_snapshot_id=975333`, current period `chain-meme-trader/funding-20260906-v002-final-1000`. Paper PID 95004 loaded matching hashes for `runtime.py`, `store.py` and `migration_first209.py`; 503 policies, same funding, Live locked. Snapshot frontier later reached 975643; 209 had zero natural decisions, fills or positions at that cutoff.
+- The inherited `min_distinct_frames=3` / `requires_actual_window_seconds=30` descriptors were checked in source: only the old `trajectory144` producer uses them; the new isolated cohort observer and Store execution do not. The next-frame test confirms these inert descriptors did not block the intended mechanism. No duplicate policy version was created to cosmetically remove them.
+
+The first `/api/live` request immediately after restart timed out at 10s; a later request returned `running`, Paper=true and Live locked. This transient is not treated as a pass for comparable-load latency. Natural signal frequency, admission conversion, costs, exits, tail losses and economic value remain **PENDING_FORWARD**. Do not auto-tune from the supplied retrospective winners.
+
+## Incremental user sample set
+
+`memory/USER_ADDITIONAL_SAMPLES_20260917.txt` retains the latest 56 lines in input order and with duplicates: 42 literal unique keys; 17 distinct keys (20 lines) were not in the original 125-line/94-unique Appendix A, giving 111 combined unique keys. A bounded exact-token-id lookup over configured chains found 10 of those 17 in the local token registry and seven absent. Neither status proves a historical profitable or executable trade. Those 17 still need the same point-in-time discovery-to-exit timeline and ordinary/failed controls as the original sample set; the frozen 94-key case report does not cover them.
+
+Separately, a current DexScreener search of the original 24 locally unmatched keys found 22 exact token-side provider matches and two without exact results (`0x0933f674bcfec78bd0f4720faf370fd9709feeee`, `0xa63e42d09bfca311e8091269ac45fdeba9b0eeee`). Current provider identity does not establish historical visibility, chain support by this system, pool safety or profitability. Most of the exact current matches are on Arc, outside the configured local trading chains; four are BSC, one Robinhood and one Solana. No address was inserted into a live discovery watchlist or strategy allow-list.
+
+## Next manual acceptance
+
+Use naturally occurring post-activation migrations, with each unique token and pool treated separately. Record event observed/ingested/recorded, first provider-exact quote, safety terminal, source BUY, projected positions, later fresh same-pool exit and net PnL including slippage/writeoff. Compare contemporaneous migrated controls and other young-pool strategies; distinguish absent provider quote from quote rejected by safety or pool floor. Stop or revise this arm if it increases old-pool/update delay or incurs materially worse tail loss. Research stays manually triggered; no scheduled task was added.
