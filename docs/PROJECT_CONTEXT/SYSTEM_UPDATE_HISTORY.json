@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-active-dex-poll-health-display",
+      "recorded_at": "2026-09-16T11:28:45Z",
+      "title": "修正发现源健康页：显示运行中的 Dex 轮询而非旧推送流",
+      "problem": "Web 将四条已不调度的 Dex 推送流旧心跳当作当前发现源，显示约19小时过期；实际 Dex 轮询在持续完成。",
+      "change": "三处现有健康查询改为六条当前 Dex 轮询源并更新中文标签；保留历史流记录，不新增采集接口、请求、定时任务或交易规则。",
+      "rationale": "当前运行模式只调度 poll_dexscreener_discovery_once，不启动 dex_discovery_stream_loop；健康状态必须指向实际调度路径。",
+      "validation": "定向Web测试1项通过、app.js语法通过；8790重载后/health、/api/live、/api/performance正常，当前列表含六条poll源且无:stream源。Paper PID9484及原1000U资金期不变，Live锁定，快照推进至927267。",
+      "scope": "Web只读展示及研究报告，无策略、账户、成交、数据采集速率或Live改动。",
+      "next": "继续按唯一发现Token、首个有效原池报价和重点持仓新鲜度评估采集效率；不要把轮询返回的重复列表项目当新币。",
+      "report": "docs/PROJECT_CONTEXT/DEX_ACTIVE_POLL_HEALTH192_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/DEX_ACTIVE_POLL_HEALTH192_20260916.md"
+    },
+    {
       "id": "20260916-contemporaneous-controls-and-effective-strategy-frontier",
       "recorded_at": "2026-09-16T11:18:33Z",
       "title": "热门样本同市况对照与498策略真实生效状态",
