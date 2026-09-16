@@ -1,5 +1,7 @@
 # Full-chain execution ledger, 2026-09-16
 
+Latest natural cutoff `2026-09-16T19:17:03Z`/snapshot984980: 209 10 distinct-token positions, one open, -46.7267U realized; 214 two terminal positions, -1.0789U; 212 three terminal positions, +8.8583U; contemporary 212 control two positions, one open, -16.0430U realized. Raw totals are not paired efficacy estimates. See the dated addendum in `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.
+
 ### Stage 217: held quote deadline experiment rejected, 2026-09-17
 
 R03/R11 remain PARTIAL. Rolling baseline held Dex failures13/64 and market-mark p95~8.66s motivated isolated 6.5s and5.0s high-priority batch-deadline trials. Short, nonmatched windows showed failures3/39/p95~11.69s and2/21/p95~11.42s respectively. Because slower exit cycles accompanied lower failures and target/network loads varied, neither is accepted as a system improvement. Reverted source to original3.5s; PID104364 hash-matched, same507 policies/period, Paper running/Live locked, frontier984840. No production code from this attempt is committed; details `docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md`. Need a matched-load resource/queue diagnosis rather than another arbitrary timeout change.

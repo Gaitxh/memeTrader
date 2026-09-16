@@ -17,3 +17,7 @@ This N=1 comparison refutes treating every retrospectively selected hot-page add
 ## Resource and remaining boundaries
 
 Short post-214 `/api/performance` showed market-mark task p50 ~3.36s/p95 ~10.18s against a configured 1s interval, while held Dex request phase p95 was ~5.56s with 12 failures in 64 samples. This is **not** a matched-load before/after comparison, so it is a latency concern to investigate, not a proven 214 regression or reason to add requests. The shared held priority lane remains in force. The larger 111-key casebook, matched loser/non-riser controls, all-policy keep/revise/retire judgments and longer natural 212/214 distributions remain open; no automatic timer or live trading was added.
+
+## Later readback, 2026-09-16T19:17:03Z
+
+At snapshot frontier984980, 209 had 10 distinct-token positions, one still open and **-46.7267U** cumulative realized; 214 had two distinct-token terminal positions and **-1.0789U** cumulative realized. The 212 anchor arm had three distinct-token terminal positions and **+8.8583U** cumulative realized; its contemporary slow-hold control had two positions, one still open and **-16.0430U** realized. Open positions, different activation frontiers and selection differences make raw account totals non-comparable. This addendum supersedes earlier counts only for current-state reporting, not their valid frozen cutoffs or the single-pair findings above.

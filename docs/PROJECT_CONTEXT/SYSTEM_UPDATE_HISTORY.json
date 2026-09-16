@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-natural-paper-readback218",
+      "recorded_at": "2026-09-16T19:17:03Z",
+      "title": "自然模拟前向新截点：早迁移入场继续亏损，退出试验仍需配对",
+      "problem": "策略持仓和平仓在前次报告后继续变化，旧截点不能充当当前结果。",
+      "change": "只读冻结快照984980的209、214、212和212慢出对照仓位数、未平仓数与已实现净额，不回填历史结论。",
+      "rationale": "209已有10个独立币仓位且一仓开放，已实现-46.7267U；214两仓已平、-1.0789U；212三仓已平、+8.8583U；同期慢出对照两仓一仓开放、已实现-16.0430U。不同前沿与开放仓位禁止直接按账户总额判优。",
+      "validation": "当前SQLite只读聚合，2026-09-16T19:17:03Z，token_snapshots前沿984980；健康接口仍报告同原资金期运行。",
+      "scope": "自然Paper结果更新；不改策略、账户、成交、历史或定时计划。",
+      "status": "净额截点已更新；独立币样本仍小，盈利能力未证明",
+      "next": "手动继续同源、同池、同入场机会及独立代币净分布复盘；分别记录遗漏赢家与尾部亏损。",
+      "report": "docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md",
+      "runtime_verification": "2026-09-16T19:17:03Z，快照984980，原资金期Paper运行。"
+    },
+    {
       "id": "20260917-held-quote-deadline-trial217",
       "recorded_at": "2026-09-16T19:16:00Z",
       "title": "持仓报价超时上限试验未通过延迟验收，已回退",

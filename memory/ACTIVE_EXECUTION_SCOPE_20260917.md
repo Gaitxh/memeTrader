@@ -35,6 +35,8 @@ Stage216 later closed both pairs: 214/209 same token but different entry fills e
 
 Stage217 tested 6.5s and5.0s held Dex batch deadlines against the original3.5s and rejected both due slower market-mark tails in nonmatched load windows despite fewer request failures. Source and worker are back at3.5s; no deadline code is committed. See `docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md`.
 
+Latest readback `2026-09-16T19:17:03Z`/snapshot984980: 209 10 positions (one open), -46.7267U realized; 214 two terminal positions, -1.0789U; 212 three terminal positions, +8.8583U; 212 slow-hold control two positions (one open), -16.0430U realized. Accounts are not directly comparable. Preserved as an addendum to `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.
+
 ## Immediate order
 
 1. **P0 conversion:** use new post-query-fix natural windows to distinguish family-policy absence, exact-pool next-frame failure, safety disposition, source BUY failure and account projection failure. Fix the first *observed* blocking mechanism without weakening the 1000U floor, identity or as-of checks.
