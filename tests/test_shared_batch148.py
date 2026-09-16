@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from memetrader.collectors import DexScreenerClient, HttpClient
+from memetrader.collectors import (
+    DEX_REQUEST_FOLLOWUP_PRIORITY, DexLowPriorityCapacityDeferred,
+    DexScreenerClient, HttpClient,
+)
 from memetrader.models import TokenCandidate, utcnow, iso
 from memetrader.shared_batch148 import SharedBatchCoverage
 from memetrader.runtime import Runtime
@@ -145,9 +148,12 @@ def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
     }
     runtime._rank_no_ca_events=lambda:None
     runtime._dex_quote_low_priority_available=lambda:True
+    runtime.market_http=SimpleNamespace(dex_followup_urgent_until=0.0)
     idle=asyncio.Event();idle.set();runtime._chain_meme_active_idle=lambda:idle
+    priority_seen=[]
 
     async def quote_batch(chain,addresses,**kwargs):
+        priority_seen.append(DEX_REQUEST_FOLLOWUP_PRIORITY.get())
         return {}
 
     runtime._dex_batch_quote=quote_batch
@@ -163,6 +169,46 @@ def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
     assert followup['sampled'] is False
     assert status['watch_refresh']['bsc']['result']=='returned'
     assert status['watch_refresh']['bsc']['returned']==0
+    assert status['watch_refresh']['bsc']['urgent_followup'] is True
+    assert priority_seen==[True]
+    assert runtime.market_http.dex_followup_urgent_until>0
+
+
+def test_frozen_followup_borrows_one_existing_low_http_slot():
+    async def scenario():
+        client=HttpClient(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=[])),
+                          min_host_interval=0)
+        release=asyncio.Event()
+        ready=asyncio.Event()
+        active=[0]
+
+        async def background():
+            async with client._dex_inflight_slot():
+                active[0]+=1
+                if active[0]==4:
+                    ready.set()
+                await release.wait()
+
+        tasks=[asyncio.create_task(background()) for _ in range(4)]
+        try:
+            await asyncio.wait_for(ready.wait(),timeout=2)
+            client.dex_followup_urgent_until=asyncio.get_running_loop().time()+10
+            with pytest.raises(DexLowPriorityCapacityDeferred):
+                async with client._dex_inflight_slot():
+                    pass
+            token=DEX_REQUEST_FOLLOWUP_PRIORITY.set(True)
+            try:
+                async with client._dex_inflight_slot():
+                    assert client.snapshot_http_capacity()['active_low_priority']==5
+            finally:
+                DEX_REQUEST_FOLLOWUP_PRIORITY.reset(token)
+            assert client.snapshot_http_capacity()['followup_reservation_deferred']==1
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+            await client.client.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_irregular_three_real_frames_use_valid_contract_span():

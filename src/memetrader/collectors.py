@@ -33,6 +33,7 @@ from .models import (
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
 DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
+DEX_REQUEST_FOLLOWUP_PRIORITY: ContextVar[bool] = ContextVar("dex_request_followup_priority", default=False)
 GECKO_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("gecko_request_high_priority", default=False)
 GECKO_LOW_START_ALLOWED = ContextVar("gecko_low_start_allowed", default=None)
 
@@ -1354,6 +1355,8 @@ class HttpClient:
         self._dex_inflight_active_by_priority: dict[bool, int] = {False: 0, True: 0}
         self._dex_inflight_waiters: dict[bool, int] = {False: 0, True: 0}
         self._dex_low_priority_deferred = 0
+        self.dex_followup_urgent_until = 0.0
+        self._dex_followup_reservation_deferred = 0
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
     def _new_client(self) -> httpx.AsyncClient:
@@ -1372,6 +1375,10 @@ class HttpClient:
             "waiting_high_priority": self._dex_inflight_waiters[True],
             "waiting_low_priority": self._dex_inflight_waiters[False],
             "low_priority_deferred": self._dex_low_priority_deferred,
+            "followup_reservation_deferred": self._dex_followup_reservation_deferred,
+            "followup_reservation_active": (
+                time.monotonic() < self.dex_followup_urgent_until
+            ),
             "low_priority_wait_seconds": self.dex_low_priority_wait,
             "client_generation": self._client_generation,
             "retired_client_generations": len(self._retired_clients),
@@ -1619,6 +1626,15 @@ class HttpClient:
                 finally:
                     self._dex_inflight_waiters[False] -= 1
                 low_slot = True
+                if (not DEX_REQUEST_FOLLOWUP_PRIORITY.get()
+                        and asyncio.get_running_loop().time() < self.dex_followup_urgent_until
+                        and self._dex_inflight_active_by_priority[False]
+                        >= self.DEX_MAX_LOW_PRIORITY_INFLIGHT - 1):
+                    self._dex_followup_reservation_deferred += 1
+                    self._dex_low_priority_deferred += 1
+                    raise DexLowPriorityCapacityDeferred(
+                        "Dex follow-up reservation temporarily defers background request"
+                    )
             self._dex_inflight_waiters[high] += 1
             try:
                 if high:

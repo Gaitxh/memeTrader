@@ -44,7 +44,8 @@ from .capital_duration_risk import load_duration_risk_samples, seal_duration_ris
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
-    DEX_REQUEST_HIGH_PRIORITY, GECKO_REQUEST_HIGH_PRIORITY, GECKO_LOW_START_ALLOWED,
+    DEX_REQUEST_HIGH_PRIORITY, DEX_REQUEST_FOLLOWUP_PRIORITY,
+    GECKO_REQUEST_HIGH_PRIORITY, GECKO_LOW_START_ALLOWED,
     dex_low_budget, DexLowPriorityCapacityDeferred, GeckoLowPriorityDeferred,
     DexScreenerClient,
     EvmRouteQuoteError,
@@ -9109,6 +9110,19 @@ class Runtime:
             for token_id, followup in signal_followups.items():
                 if token_id.startswith(chain + ":"):
                     followup["due"] = token_id.partition(":")[2] in due
+            urgent_followup = any(
+                item["due"] and token_id.startswith(chain + ":")
+                for token_id, item in signal_followups.items()
+            )
+            trace["urgent_followup"] = urgent_followup
+            if (urgent_followup and getattr(self, "market_http", None) is not None
+                    and self._chain_meme_active_idle().is_set()
+                    and asyncio.get_running_loop().time() >= getattr(
+                        self, "_dex_quote_backoff_until", 0.0)):
+                self.market_http.dex_followup_urgent_until = max(
+                    self.market_http.dex_followup_urgent_until,
+                    asyncio.get_running_loop().time() + 20,
+                )
             available = bool(due) and self._dex_quote_low_priority_available()
             if due and not available:
                 loop = asyncio.get_running_loop()
@@ -9130,13 +9144,17 @@ class Runtime:
                         # signals above borrow ordinary slots in this due batch.
                         due,extra=manager.extend_batch(chain,due,utcnow(),
                             excluded=set(watch)|set(priority)|pending_followups)
-                    async with dex_low_budget(3):
-                        if extra:
-                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
-                                feature_only148=extra, phase_timings=timings)
-                        else:
-                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
-                                phase_timings=timings)
+                    priority_token = DEX_REQUEST_FOLLOWUP_PRIORITY.set(urgent_followup)
+                    try:
+                        async with dex_low_budget(4.5 if urgent_followup and not priority else 3):
+                            if extra:
+                                quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
+                                    feature_only148=extra, phase_timings=timings)
+                            else:
+                                quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
+                                    phase_timings=timings)
+                    finally:
+                        DEX_REQUEST_FOLLOWUP_PRIORITY.reset(priority_token)
                     trace.update(timings)
                     trace["result"] = "returned" if quoted is not None else "runtime_deferred"
                     trace["returned"] = len(quoted or {})
