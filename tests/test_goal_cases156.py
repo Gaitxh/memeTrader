@@ -155,6 +155,17 @@ def test_creation_timeline_never_promotes_future_or_unreceived_event():
     assert result['first_reported_pair_creation']['pair_address'] == 'pool'
 
 
+def test_first_valid_pool_keeps_its_own_provider_created_time():
+    rows = [
+        {**row(1, 'bad', 1, price=None), 'pair_created_at': 1767225500000},
+        {**row(2, 'good', 5), 'pair_created_at': 1767225602000},
+    ]
+    result = snapshot_summary(rows, stamp('2026-01-02T00:00:00Z'))
+    first = result['first_valid_recorded_pool_snapshot']
+    assert first['pair_address'] == 'good'
+    assert first['reported_pair_created_at'] == '2026-01-01T00:00:02+00:00'
+
+
 def test_asof_excludes_future_missing_and_timezone_naive_event_times():
     rows = [dict(id=1, at='2026-01-01T00:00:00Z'), dict(id=2, at='2099-01-01T00:00:00Z'),
         dict(id=3, at=None), dict(id=4, at='2026-01-01T00:00:00')]

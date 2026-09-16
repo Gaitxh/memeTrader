@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-same-pool-created-gap206",
+      "recorded_at": "2026-09-16T17:39:00Z",
+      "title": "把金狗发现等待拆成建池等待和待查采集延迟",
+      "problem": "发现到首个有效报价超过10分钟不必然是采集故障；此前跨池比较创建时间会误判。",
+      "change": "逐样本绑定首次有效候选报价的同一池创建时钟并保留本地报价入库时间，重新分类19个长间隔。",
+      "rationale": "只有同池且当时已可交易的证据才能支持优化调度，不能按事后池创建时间虚构早期可成交机会。",
+      "validation": "定向案例测试9项通过；19个长间隔中15个同池创建晚于发现，4个同池报告早已存在；其中一币早期有27个资料发现暴露、无行情快照，需按当时调度状态继续核验。",
+      "scope": "只读历史研究与报告，无交易、资金、API请求、策略或Live改动。",
+      "status": "长间隔完成初步因果拆分；早建池4币的当时流动性、调度重试、可卖性和普通对照尚未核验",
+      "next": "按同池、同时间的请求/错误/队列/流动性证据检查4币，再判断是否为今天仍存在的共享采集瓶颈。",
+      "report": "docs/PROJECT_CONTEXT/CASE_DISCOVERY_TIMELINE205_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/CASE_DISCOVERY_TIMELINE205_20260917.md",
+      "runtime_verification": "Paper未重启；本轮仅重跑约2秒的只读案例脚本。"
+    },
+    {
       "id": "20260917-case-discovery-clocks205",
       "recorded_at": "2026-09-16T17:36:50Z",
       "title": "补齐94个样例的发现来源和创建时钟",

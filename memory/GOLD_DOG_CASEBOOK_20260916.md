@@ -1,6 +1,6 @@
 # 热门金狗案例索引（2026-09-16）
 
-> 2026-09-17 current scope: the later full user Appendix A supersedes the smaller case set described below. It has 125 ordered address lines/94 unique research keys; 70 match the current canonical DB, 24 do not. The new per-case discovery/creation timeline is `data/research/goal_cases205/cases_20260916T173649Z.json` with interpretation in `docs/PROJECT_CONTEXT/CASE_DISCOVERY_TIMELINE205_20260917.md`. The 81/65/16 counts below are an earlier historical snapshot, not current-task denominators.
+> 2026-09-17 current scope: the later full user Appendix A supersedes the smaller case set described below. It has 125 ordered address lines/94 unique research keys; 70 match the current canonical DB, 24 do not. The new per-case discovery/creation timeline is `data/research/goal_cases205/cases_20260916T173845Z.json` with interpretation in `docs/PROJECT_CONTEXT/CASE_DISCOVERY_TIMELINE205_20260917.md`. The 81/65/16 counts below are an earlier historical snapshot, not current-task denominators.
 
 ## 样本身份
 

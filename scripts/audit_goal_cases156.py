@@ -150,9 +150,13 @@ def snapshot_summary(rows, cutoff):
         processing.append(recorded - observed)
         if first_valid is None or (recorded, row['id']) < (
                 stamp(first_valid['recorded_at']), first_valid['snapshot_id']):
+            pair_created = reported_event_stamp(row.get('pair_created_at'))
             first_valid = dict(snapshot_id=row['id'], pair_address=pair,
                 provider=row.get('provider'), observed_at=row['observed_at'],
-                recorded_at=row['recorded_at'])
+                recorded_at=row['recorded_at'],
+                reported_pair_created_at=(
+                    datetime.fromtimestamp(pair_created, timezone.utc).isoformat()
+                    if pair_created is not None and pair_created <= observed else None))
     result = []
     for pair, observations in pools.items():
         times = sorted(observations)
@@ -344,7 +348,7 @@ def markdown(report):
     lines += ['', '## 创建与发现时点证据', '',
         '池创建及launch事件时间是供应商报告时间；只有对应本地观察/记录之后才可用，不能回填到事件时刻。'
         ' 首个本地发现标记缺失表示记录不完整或左截断，不等于系统当时绝对没有发现。', '',
-        '| Token | 首次发现暴露 (观察 / 入库 / 来源) | 首个本地发现标记 | 最早已见池的报告创建 / 当时入库 | 首次有效候选池报价入库 / 发现后秒数 | launch来源事件 / 入库 |',
+        '| Token | 首次发现暴露 (观察 / 入库 / 来源) | 首个本地发现标记 | 最早已见池的报告创建 / 当时入库 | 首次有效候选池报告创建 / 报价入库 / 发现后秒数 | launch来源事件 / 入库 |',
         '|---|---|---|---|---|---|']
     for case in report['cases']:
         if not case['matches']:
@@ -364,7 +368,7 @@ def markdown(report):
                 f"{pair.get('first_locally_recorded_at')}" if pair else '未知')
             quote = (item.get('market_observations') or {}).get('first_valid_recorded_pool_snapshot') or {}
             quote_delay = item.get('discovery_to_valid_pool_quote_seconds')
-            quote_text = (f"{quote.get('recorded_at')} / "
+            quote_text = (f"{quote.get('reported_pair_created_at') or '未知'} / {quote.get('recorded_at')} / "
                 f"{round(quote_delay, 3) if quote_delay is not None else '不可计算'}"
                 if quote else '未知')
             launch_text = (f"{launch.get('source_observed_at')} / {launch.get('recorded_at')}"
