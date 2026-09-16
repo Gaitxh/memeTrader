@@ -9159,7 +9159,7 @@ class Runtime:
                             excluded=set(watch)|set(priority)|pending_followups)
                     priority_token = DEX_REQUEST_FOLLOWUP_PRIORITY.set(urgent_followup)
                     try:
-                        async with dex_low_budget(4.5 if urgent_followup and not priority else 3):
+                        async with dex_low_budget(6 if urgent_followup else 3):
                             if extra:
                                 quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
                                     feature_only148=extra, phase_timings=timings)

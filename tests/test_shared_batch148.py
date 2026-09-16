@@ -1,6 +1,7 @@
 """C3 contract tests: real HTTP batching and actual Paper pipeline, no network."""
 import asyncio
 from collections import deque
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
@@ -151,6 +152,14 @@ def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
     runtime.market_http=SimpleNamespace(dex_followup_urgent_until=0.0)
     idle=asyncio.Event();idle.set();runtime._chain_meme_active_idle=lambda:idle
     priority_seen=[]
+    budgets=[]
+
+    @asynccontextmanager
+    async def budget(seconds):
+        budgets.append(seconds)
+        yield
+
+    monkeypatch.setattr('memetrader.runtime.dex_low_budget',budget)
 
     async def quote_batch(chain,addresses,**kwargs):
         priority_seen.append(DEX_REQUEST_FOLLOWUP_PRIORITY.get())
@@ -171,6 +180,7 @@ def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
     assert status['watch_refresh']['bsc']['returned']==0
     assert status['watch_refresh']['bsc']['urgent_followup'] is True
     assert priority_seen==[True]
+    assert budgets==[6]
     assert runtime.market_http.dex_followup_urgent_until>0
 
 
