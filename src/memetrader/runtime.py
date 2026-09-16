@@ -1454,6 +1454,7 @@ class Runtime:
                     self.store.register_chain_meme_core_portfolio183()
                     self.store.register_chain_meme_trajectory_regime187()
                     self.store.register_chain_meme_trajectory_exit190()
+                    self.store.register_chain_meme_depth_cross191()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -8535,6 +8536,10 @@ class Runtime:
             self.store._trajectory144=Engine144(saved['started_at'] if saved else utcnow())
             if saved:self.store._trajectory144.load_state(saved)
         trajectory144=self.store._trajectory144
+        if not hasattr(self.store, '_depth_cross191'):
+            from .depth_cross191 import Tracker as DepthCrossTracker
+            self.store._depth_cross191 = DepthCrossTracker(utcnow())
+        depth_cross191 = self.store._depth_cross191
         # ALPHA149: the isolated engine for the alpha149_* arms must be fed the
         # same observed frames as the other trajectory engines, otherwise its
         # pools stay empty and every alpha149 entry waits forever on
@@ -8831,6 +8836,7 @@ class Runtime:
                 quotes[identity] = (token, snapshot)
             now = utcnow()
             fresh_trajectory = set(); fresh144=set(); fresh149=set(); extra148_signals={}; delayed148=[]
+            depth_cross_signals = {}
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
                 feature_only = frame['token_id'] in extra148
@@ -8838,6 +8844,10 @@ class Runtime:
                     delayed148.append(quotes.pop(identity))
                     continue
                 started145=asyncio.get_running_loop().time()
+                cross_signal = depth_cross191.accept(frame, now, floor=getattr(
+                    self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                if cross_signal is not None:
+                    depth_cross_signals[identity] = cross_signal
                 accepted144 = trajectory144.accept(frame,now)
                 if accepted144 is not None:
                     fresh144.add(identity)
@@ -8889,6 +8899,9 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in depth_cross_signals:
+                    from .depth_cross191 import ARM as DEPTH_CROSS_ARM
+                    signals.setdefault(identity, {})[DEPTH_CROSS_ARM] = depth_cross_signals[identity]
                 if identity[0] in extra148:
                     signals.setdefault(identity,{}).update(extra148_signals.get(identity,{}))
                     # ALPHA149: spare-capacity frames exist to give the new arms
@@ -10235,7 +10248,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',
@@ -10268,7 +10281,7 @@ class Runtime:
                 *([asyncio.create_task(post_exit151_run(self), name='post_exit151')]
                   if self.config.get('optimization151', {}).get('post_exit_enabled', True) else []),
                 *([asyncio.create_task(forward_review151_run(self), name='forward_review151')]
-                  if self.config.get('optimization151', {}).get('review_enabled', True) else []),
+                  if self.config.get('optimization151', {}).get('review_enabled', False) else []),
                 asyncio.create_task(self._periodic('narrative_hold_v2', 15, self.narrative_hold.once), name='narrative_hold_v2'),
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 asyncio.create_task(
