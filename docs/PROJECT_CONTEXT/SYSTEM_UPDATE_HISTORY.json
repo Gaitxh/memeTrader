@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-contemporaneous-controls-and-effective-strategy-frontier",
+      "recorded_at": "2026-09-16T11:18:33Z",
+      "title": "热门样本同市况对照与498策略真实生效状态",
+      "problem": "只看事后热门币与页面账户数，容易把选择偏差当alpha、把主V6通道的1个可准入臂误当全系统仅1个策略可交易。",
+      "change": "新增有界只读同链/同源/同池龄/相近流动性对照研究，价格终点缺失保持未知、已知原池跌破底线单列核销；按当前有效定义与生命周期覆盖层重新核对全部498个策略账户。",
+      "rationale": "匹配只使用锚点时已知字段，后来30分钟行情仅作研究结果。独立观察臂有自己的Paper准入通道，不能套用V6主通道计数。",
+      "validation": "3项定向测试通过；70个当前期规范身份中61有有效锚点、38有对照，最终仅13个独立样本币和25个对照币形成25条完整30分钟链接。热门样本8/13、对照8/25有正向成本调整行情标记，但这是事后挑选且非可执行盈亏。498账户中421被生命周期暂停/退役/失败，77未暂停；191两臂未暂停、暂无自然决策/仓位。",
+      "scope": "只读研究脚本、报告与任务台账；不更改Paper策略规则、历史资金账户、接口、研究定时或Live。",
+      "next": "用新出现且未用于构思的Token检验活动特征增量；完成退役原因分类及同入口退出对照，不把小样本行情差异直接升格为策略。",
+      "report": "docs/PROJECT_CONTEXT/SAMPLE_CONTROLS192_AND_STRATEGY_FRONTIER_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/SAMPLE_CONTROLS192_AND_STRATEGY_FRONTIER_20260916.md"
+    },
+    {
       "id": "20260916-full-sample-cohort-position-audit",
       "recorded_at": "2026-09-16T11:09:28Z",
       "title": "完整样本的逐机会未成交与逐仓退出复核",
