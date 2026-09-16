@@ -28,7 +28,7 @@ def classify(decisions: list[sqlite3.Row], filled: bool, safety: list[dict],
         if "CHECKED_WEAK" in states or "WAIT_WEAK" in states:
             return "weak_sellability_evidence"
         if "CHECKED_UNKNOWN" in states:
-            allowed = [row.get("assessment", {}).get("allow") for row in safety
+            allowed = [(row.get("assessment") or {}).get("allow") for row in safety
                        if row.get("safety_status") == "CHECKED_UNKNOWN"]
             if allowed and allowed[-1] is False:
                 return "safety_unknown_not_allowed"

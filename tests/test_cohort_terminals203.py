@@ -18,6 +18,9 @@ def test_terminal_classification_keeps_units_and_safety_distinct():
     assert classify([decision()], False, [
         {"safety_status": "CHECKED_UNKNOWN", "assessment": {"allow": False}},
     ]) == "safety_unknown_not_allowed"
+    assert classify([decision()], False, [
+        {"safety_status": "CHECKED_UNKNOWN", "assessment": None},
+    ]) == "unknown_safety_or_next_frame"
     assert classify([decision("rejected", "entry_cash_below_order_size")],
                     False, []) == "no_funded_arm_cash"
     assert classify([], False, []) == "no_arm_decision_or_native_path"
