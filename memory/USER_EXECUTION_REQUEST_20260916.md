@@ -153,7 +153,6 @@
 ## 附录 A：用户提供的原始代币地址清单
 
 保留输入顺序与重复项；以下地址未进行链上、平台、交易性或收益核验，不代表已确认的盈利样本。执行任务时应保留本原始清单，另建立经核验的研究索引。
-
 ```text
 88t4EdAjiuUDzHujJnK5nywitQzYQWEJq2ouUgRGpump
 EUTipzFepgT9614RaCQaKcqL2NnJFDmvpTcZTrXYpump

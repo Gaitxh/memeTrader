@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-full-scope-reread-and-forward-correction",
+      "recorded_at": "2026-09-16T17:10:00Z",
+      "title": "完整重读任务并纠正策略完成度与当前状态入口",
+      "problem": "此前用局部性能修复和三个策略部署回应完整任务，未闭环逐币对照、全部策略处置、原池后帧与净收益；旧当前状态文件仍指向历史阶段。",
+      "change": "逐行重读两份相同附件及125个有序样本；两位独立Agent分别复核策略和全链路；建立12项当前执行/验收索引，修正原文保存的字节哈希口径，并把过期状态头标为历史。",
+      "rationale": "让后续开发围绕可验证的交易转化与独立Token成本后结果，不把策略数量、短窗提速或同源重复仓位当盈利。",
+      "validation": "当前Paper 502策略、原资金期、Live锁定。新198策略已有两笔自然平仓，亏损2.655U及5.134U，与母臂187同源退出和结果相同；199和200仍无自然持仓。等长17分钟窗V6源成交由1币到7币，但负载和市场不同，不归因于单项修复。",
+      "scope": "本轮为需求、证据与状态纠偏及只读前向诊断；不更改交易规则、资金、实盘或任务调度。",
+      "status": "任务覆盖已重新核对；代码策略经济验证、全链路瓶颈闭环、完整样本对照与最终验收仍未完成",
+      "next": "按Token/cohort拆解原池后帧、安全、源BUY和账户投影的首个自然阻塞，再做可回退修复；继续对已部署策略记录扣费后独立样本结果。",
+      "report": "docs/PROJECT_CONTEXT/FULL_SCOPE_REAUDIT_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/FULL_SCOPE_REAUDIT_20260917.md",
+      "runtime_verification": "Paper PID96040；502策略；原1000U资金期；Live锁定；无定时任务新增。"
+    },
+    {
       "id": "20260917-creator-join-event-loop202",
       "recorded_at": "2026-09-16T16:54:00Z",
       "title": "修复创建者研究查询的同步全表扫描",
