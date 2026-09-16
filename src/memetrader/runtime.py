@@ -9252,11 +9252,11 @@ class Runtime:
                     if item['probe_frames'] in (2, 3):
                         self.store.rediscovery_funnel_hit(token.token_id, 'temporary_slot_frames_'+str(item['probe_frames']), received)
                 sampled += 1
-                if (token.token_id in signal_followups
-                        and snapshot.ingested_at > parse_time(
-                            signal_followups[token.token_id]["signal_recorded_at"]
-                        )):
-                    signal_followups[token.token_id]["sampled"] = True
+                if token.token_id in signal_followups:
+                    signal_at = parse_time(signal_followups[token.token_id]["signal_recorded_at"])
+                    if (snapshot.observed_at is not None and snapshot.observed_at > signal_at
+                            and (snapshot.ingested_at is None or snapshot.ingested_at > signal_at)):
+                        signal_followups[token.token_id]["sampled"] = True
                 # Independent candidate work must not monopolize the event loop
                 # while held-market responses and exits are already ready.
                 await asyncio.sleep(0)

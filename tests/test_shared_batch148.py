@@ -184,6 +184,42 @@ def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
     assert runtime.market_http.dex_followup_urgent_until>0
 
 
+def test_watched_frozen_signal_accepts_fresh_frame_without_optional_ingested_at(monkeypatch):
+    from test_observation_leases145_runtime import LeaseStore, bare_runtime
+
+    clock = [utcnow()]
+    monkeypatch.setattr('memetrader.runtime.utcnow', lambda: clock[0])
+    runtime = bare_runtime(LeaseStore())
+    runtime.chain_meme_trader_only = True
+    token, original = asset(13, clock[0])
+    runtime._remember_pattern_quotes({token.token_id: (token, original)})
+    runtime._cohort_pending = {
+        (token.token_id, original.raw['pair']['pairAddress']): {
+            'signals': {'trial': {'recorded_at': iso(clock[0])}},
+            'dispatch_counts': {'trial': 1},
+        },
+    }
+    runtime._rank_no_ca_events = lambda: None
+    runtime._dex_quote_low_priority_available = lambda: True
+    idle = asyncio.Event()
+    idle.set()
+    runtime._chain_meme_active_idle = lambda: idle
+    clock[0] += timedelta(seconds=16)
+    fresh = deepcopy(original)
+    fresh.observed_at = clock[0]
+    fresh.ingested_at = None
+
+    async def quote_batch(chain, addresses, **kwargs):
+        runtime._remember_pattern_quotes({token.token_id: (token, fresh)})
+        return {token.token_id: (token, fresh)}
+
+    runtime._dex_batch_quote = quote_batch
+    asyncio.run(runtime.chain_meme_pattern_observer_once())
+    status = runtime.store.kv['coverage145:status']
+    assert runtime.store.observed == 1
+    assert status['signal_followups'][0]['sampled'] is True
+
+
 def test_frozen_followup_borrows_one_existing_low_http_slot():
     async def scenario():
         client=HttpClient(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=[])),
