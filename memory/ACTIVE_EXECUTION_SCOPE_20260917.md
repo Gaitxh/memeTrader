@@ -31,6 +31,8 @@ Stage214 added a separate same-migration-pool second-frame persistence entry tri
 
 Stage215 later resolved those six using existing cohort-keyed safety records: two BSC WEAK expiries, three Robinhood UNKNOWN/disallowed expiries, one BSC transfer-pausable rejection; all had timely exact-pool follow-up. The manual 507-arm full inventory is `data/research/strategy_inventory214_full.json`. By snapshot982570, 214 and 209 had same-token but different-fill open positions, and 212/control had one same-entry cohort with 212 closed -4.16306U while control remained open. See `docs/PROJECT_CONTEXT/COHORT_TERMINAL_AND_STRATEGY_READBACK215_20260917.md`. Earlier zero-position and unresolved statements refer to their own older cutoffs, not current state.
 
+Stage216 later closed both pairs: 214/209 same token but different entry fills each -1.1136U; 212/control same entry -4.16306U vs -16.0430U (one favorable avoided-loss pair only). Eight total 209 distinct tokens closed -42.3437U. A user-list BIKE case lost while a near-time ordinary Solana control won substantially, so hindsight hot-list membership cannot be used as a decision feature. See `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.
+
 ## Immediate order
 
 1. **P0 conversion:** use new post-query-fix natural windows to distinguish family-policy absence, exact-pool next-frame failure, safety disposition, source BUY failure and account projection failure. Fix the first *observed* blocking mechanism without weakening the 1000U floor, identity or as-of checks.
