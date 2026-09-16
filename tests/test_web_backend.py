@@ -72,6 +72,21 @@ def test_compact_strategy_detail_preserves_current_hard_stop(tmp_path: Path):
     assert strategy["hard_stop_return"] == policy["hard_stop_return"]
 
 
+def test_chain_web_source_health_uses_active_dex_polls_not_retired_streams(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    try:
+        store.activate_chain_meme_trader_funded_period()
+        store.heartbeat("dexscreener:token_profiles", item=True)
+        store.heartbeat("dexscreener:token_profiles:stream", item=True)
+        sources = ChainWebData(config_path).live_summary()["source_health"]
+        names = {item["source"] for item in sources}
+        assert "dexscreener:token_profiles" in names
+        assert "dexscreener:token_profiles:stream" not in names
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("endpoint", ["compact", "health"])
 @pytest.mark.parametrize("future", [False, True])
 def test_heartbeat_clock_follows_read_snapshot(tmp_path: Path, monkeypatch, endpoint, future):

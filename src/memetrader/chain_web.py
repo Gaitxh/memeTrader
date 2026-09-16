@@ -891,8 +891,9 @@ class ChainWebData:
                 "'chain-meme-trader','chain-meme-market-marks','chain-meme-carried-market-marks',"
                 "'pumpportal','pumpportal:create','pumpportal:migration','multichain_meme_data',"
                 "'dexscreener_discovery','dexscreener:hydration','geckoterminal:solana',"
-                "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
-                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
+                "'dexscreener:profile_updates','dexscreener:boosts_latest',"
+                "'dexscreener:token_profiles','dexscreener:community_takeovers',"
+                "'dexscreener:boosts_top','dexscreener:ads',"
                 "'geckoterminal:bsc','geckoterminal:robinhood',"
                 "'flat-compression-breakout-shadow') ORDER BY source")
             held = self._rows(connection,
@@ -2024,8 +2025,9 @@ class ChainWebData:
                 "SELECT source,last_ok_at,last_item_at,last_error_at,last_error "
                 "FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
-                "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
-                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
+                "'dexscreener:profile_updates','dexscreener:boosts_latest',"
+                "'dexscreener:token_profiles','dexscreener:community_takeovers',"
+                "'dexscreener:boosts_top','dexscreener:ads',"
                 "'multichain_meme_data',"
                 "'chain-meme-market-marks') ORDER BY source",
             )
@@ -2196,8 +2198,9 @@ class ChainWebData:
                 connection,
                 "SELECT * FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
-                "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
-                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
+                "'dexscreener:profile_updates','dexscreener:boosts_latest',"
+                "'dexscreener:token_profiles','dexscreener:community_takeovers',"
+                "'dexscreener:boosts_top','dexscreener:ads',"
                 "'onchain_only_jupiter_quote','solana-held-accounts',"
                 "'chain-meme-postbuy-research','chain-meme-market-marks',"
                 "'multichain_meme_data') "
