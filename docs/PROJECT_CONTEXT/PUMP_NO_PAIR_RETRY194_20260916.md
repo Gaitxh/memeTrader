@@ -96,6 +96,20 @@ permanent misses. This confirms retry delivery, not a new BUY, exit or net
 profit. A pool may appear later, and the continued lifecycle must be read
 as-of its later receipt.
 
+Equal nine-minute wall-clock hydration windows provide a first resource
+sanity check, not a controlled market comparison. Before final deployment
+(`12:13-12:22Z`), Solana completed 47 Dex hydration batches for 442 address
+queries, with 296 returned and 146 no-pair exposures. After (`12:22-12:31Z`),
+46 completed batches queried 589 addresses, with 418 returned and 171
+no-pair. Robinhood completed batches were 49/48 and BSC 30/30. The later
+window also recorded one Solana `ReadTimeout` and one BSC `ConnectTimeout`,
+with no hydration 429 in these bounded round records. More addresses per
+completed Solana batch is consistent with better batch utilization, but
+the changed candidate mix prevents attributing extra **valid original-pool**
+quotes or economic performance to this release. Runtime passive-queue
+diagnostics after activation reported zero dropped batches/quotes; the
+same-load latency comparison remains open.
+
 The old 102-token window was already older than the ten-minute fast-retry
 boundary by deployment; this release must be evaluated on **new** Pump-create
 cohorts after startup. Measure independent token IDs with first Dex no-pair,
