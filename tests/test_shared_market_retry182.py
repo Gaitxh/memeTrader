@@ -146,3 +146,36 @@ def test_recent_pump_no_pair_retry_survives_saturated_fresh_lane(tmp_path):
     )
     assert [row["token_id"] for row in second_due].count(token.token_id) == 1
     store.close()
+
+
+def test_recent_pump_retry_balances_newest_due_and_oldest_due(tmp_path):
+    store = Store(tmp_path / "pump-retry-order.sqlite3")
+    now = utcnow()
+    tokens = []
+    for address, seconds in (("P" * 32, 1), ("Q" * 32, 30)):
+        token = TokenCandidate(
+            chain="solana", address=address, name="Pump create",
+            source="pumpportal:create", first_seen_at=now,
+        )
+        store.enqueue_token_detail_hydration("solana", address, enqueued_at=now)
+        store.record_token_launch_fact(token, observed_at=now, ingested_at=now)
+        store.mark_token_detail_hydration(
+            token.token_id, "no_pair", now=now + timedelta(seconds=seconds),
+        )
+        tokens.append(token.token_id)
+    for index in range(14):
+        store.enqueue_token_detail_hydration(
+            "solana", f"pending-{index}", enqueued_at=now,
+        )
+    due = now + timedelta(seconds=120)
+    small = store.due_token_detail_hydrations(
+        limit=4, now=due, chains=("solana",), prefer_fresh=True, retry_limit=0,
+    )
+    assert tokens[1] in [row["token_id"] for row in small]
+    assert tokens[0] not in [row["token_id"] for row in small]
+    full = store.due_token_detail_hydrations(
+        limit=12, now=due, chains=("solana",), prefer_fresh=True, retry_limit=0,
+    )
+    assert {row["token_id"] for row in full}.issuperset(tokens)
+    assert sum(row["status"] == "pending" for row in full) == 10
+    store.close()

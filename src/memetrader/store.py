@@ -9966,29 +9966,37 @@ class Store:
         if prefer_fresh and selected_chains and available > len(reserved_followups):
             # Pump create often precedes DEX indexing. Its 90/210-second retry
             # is useless if a saturated pending lane can defer it indefinitely.
-            # Use one place in an already scheduled per-chain batch, even when
-            # the slower generic retry lane is on its 30-second cooldown.
+            # Give the newest due token its early second look and drain one
+            # older due token when the per-chain batch has room. Neither lane
+            # depends on the slower generic retry cooldown.
             recent_at = iso(parse_time(due_at) - timedelta(minutes=10))
+            reserved_ids: set[str] = set()
             with self._lock:
                 for chain in selected_chains:
-                    if len(reserved_followups) + len(reserved_retries) >= available:
-                        break
-                    retry = self.db.execute(
-                        "SELECT hydration.* FROM token_detail_hydration AS hydration "
-                        "WHERE hydration.status='no_pair' AND hydration.chain=? "
-                        "AND hydration.next_attempt_at>=? AND hydration.next_attempt_at<=? "
-                        "AND hydration.attempts IN (1,2) "
-                        "AND hydration.followup_until IS NULL "
-                        "AND EXISTS(SELECT 1 FROM token_launch_facts AS fact "
-                        "WHERE fact.token_id=hydration.token_id "
-                        "AND fact.launch_provider='pumpportal' "
-                        "AND fact.launch_surface='pump' AND fact.launch_event_type='create' "
-                        "AND fact.recorded_at>=? AND fact.recorded_at<=?) "
-                        "ORDER BY hydration.next_attempt_at,hydration.enqueued_at LIMIT 1",
-                        (chain, recent_at, due_at, recent_at, due_at),
-                    ).fetchone()
-                    if retry is not None:
-                        reserved_retries.append(retry)
+                    directions = ("DESC", "ASC") if available >= 10 else ("DESC",)
+                    for direction in directions:
+                        if len(reserved_followups) + len(reserved_retries) >= available:
+                            break
+                        candidates = self.db.execute(
+                            "SELECT hydration.* FROM token_detail_hydration AS hydration "
+                            "WHERE hydration.status='no_pair' AND hydration.chain=? "
+                            "AND hydration.next_attempt_at>=? AND hydration.next_attempt_at<=? "
+                            "AND hydration.attempts IN (1,2) "
+                            "AND hydration.followup_until IS NULL "
+                            "AND EXISTS(SELECT 1 FROM token_launch_facts AS fact "
+                            "WHERE fact.token_id=hydration.token_id "
+                            "AND fact.launch_provider='pumpportal' "
+                            "AND fact.launch_surface='pump' AND fact.launch_event_type='create' "
+                            "AND fact.recorded_at>=? AND fact.recorded_at<=?) "
+                            f"ORDER BY hydration.next_attempt_at {direction},"
+                            f"hydration.enqueued_at {direction} LIMIT 2",
+                            (chain, recent_at, due_at, recent_at, due_at),
+                        ).fetchall()
+                        retry = next((row for row in candidates
+                                      if str(row["token_id"]) not in reserved_ids), None)
+                        if retry is not None:
+                            reserved_retries.append(retry)
+                            reserved_ids.add(str(retry["token_id"]))
         pending_available = max(0, available - len(reserved_followups) - len(reserved_retries))
         base_sql = f"""
             SELECT * FROM token_detail_hydration
