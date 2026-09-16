@@ -1357,6 +1357,11 @@ class HttpClient:
         self._dex_low_priority_deferred = 0
         self.dex_followup_urgent_until = 0.0
         self._dex_followup_reservation_deferred = 0
+        self._dex_phase_samples = {
+            "held": deque(maxlen=64),
+            "followup": deque(maxlen=64),
+            "background": deque(maxlen=64),
+        }
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
     def _new_client(self) -> httpx.AsyncClient:
@@ -1364,9 +1369,9 @@ class HttpClient:
             return self._client_factory()
         return httpx.AsyncClient(**self._client_options)
 
-    def snapshot_http_capacity(self) -> dict[str, int | bool | float]:
+    def snapshot_http_capacity(self) -> dict[str, Any]:
         """Return bounded client arbitration and failed-connection recovery state."""
-        return {
+        snapshot = {
             "max_inflight": self.DEX_MAX_INFLIGHT,
             "max_low_priority_inflight": self.DEX_MAX_LOW_PRIORITY_INFLIGHT,
             "active": self._dex_inflight_active,
@@ -1397,6 +1402,16 @@ class HttpClient:
             "client_requests_active": sum(self._client_active.values()),
             "client_generations_closing": len(self._closing_clients),
         }
+        for lane, samples in self._dex_phase_samples.items():
+            phases: dict[str, Any] = {"samples": len(samples)}
+            for phase in ("slot_ms", "start_ms", "client_ms", "http_ms", "cleanup_ms", "total_ms"):
+                values = sorted(float(sample[phase]) for sample in samples)
+                if values:
+                    phases[phase + "_p95"] = round(values[min(len(values) - 1, math.ceil(len(values) * 0.95) - 1)], 1)
+            phases["failures"] = sum(sample["outcome"] != "ok" for sample in samples)
+            phases["last_outcome"] = samples[-1]["outcome"] if samples else None
+            snapshot["dex_phase_" + lane] = phases
+        return snapshot
 
     def _prune_cache(self, now: float) -> None:
         if len(self._cache) < self.MAX_CACHE_ENTRIES:
@@ -1722,13 +1737,39 @@ class HttpClient:
             return response
         host = urllib.parse.urlparse(url).netloc.lower()
         if host == "api.dexscreener.com":
-            async with self._dex_inflight_slot():
-                await self._reserve_host_request_start(host)
-                async with self._request_client(host) as request_client:
-                    request_kwargs = {"params": params, "headers": headers}
-                    if request_timeout is not None:
-                        request_kwargs["timeout"] = max(0.1, float(request_timeout))
-                    response = await request_client.get(url, **request_kwargs)
+            lane = ("held" if DEX_REQUEST_HIGH_PRIORITY.get() else
+                    "followup" if DEX_REQUEST_FOLLOWUP_PRIORITY.get() else "background")
+            phase_started = time.monotonic()
+            slot_done = start_done = http_started = http_done = None
+            outcome = "ok"
+            try:
+                async with self._dex_inflight_slot():
+                    slot_done = time.monotonic()
+                    await self._reserve_host_request_start(host)
+                    start_done = time.monotonic()
+                    async with self._request_client(host) as request_client:
+                        request_kwargs = {"params": params, "headers": headers}
+                        if request_timeout is not None:
+                            request_kwargs["timeout"] = max(0.1, float(request_timeout))
+                        http_started = time.monotonic()
+                        try:
+                            response = await request_client.get(url, **request_kwargs)
+                        finally:
+                            http_done = time.monotonic()
+            except BaseException as exc:
+                outcome = type(exc).__name__
+                raise
+            finally:
+                finished = time.monotonic()
+                self._dex_phase_samples[lane].append({
+                    "slot_ms": 1000 * ((slot_done or finished) - phase_started),
+                    "start_ms": 1000 * ((start_done or finished) - slot_done) if slot_done else 0,
+                    "client_ms": 1000 * ((http_started or finished) - start_done) if start_done else 0,
+                    "http_ms": 1000 * ((http_done or finished) - http_started) if http_started else 0,
+                    "cleanup_ms": 1000 * (finished - http_done) if http_done else 0,
+                    "total_ms": 1000 * (finished - phase_started),
+                    "outcome": outcome,
+                })
         else:
             await self._reserve_host_request_start(host)
             async with self._request_client(host) as request_client:
