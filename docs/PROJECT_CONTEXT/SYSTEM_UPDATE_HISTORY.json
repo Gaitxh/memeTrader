@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-honeypot-original-pool189",
+      "recorded_at": "2026-09-16T08:50:43Z",
+      "title": "全策略貔貅入场安全与同原池反向报价恢复",
+      "problem": "弱安全字段和DEX连续性代理曾可授权Paper买入；反向原池报价丢弃quote_token_price_usd，导致已持仓Token的原池报价过期。",
+      "change": "共享安全门要求直接可卖/非貔貅证据，Solana七项控制明确清除，152代理不可跳过安全门；同一Gecko原池可用报价侧美元价和池储备恢复Paper报价。已确证貔貅交易复用幂等整生命周期作废机制。",
+      "rationale": "安全缺证不是安全证明；不同池价格不能借给原池；盈利或亏损的貔貅交易都应从有效账户历史排除，不应只补亏损。",
+      "validation": "60项定向测试通过；本期38290仓位无确证貔貅仓位可作废。Paper子进程67704重启后原资金期、Live锁和三API正常；真实WIF原池仍过期，Gecko精确池HTTP429，Demo源无密钥，自然恢复未获证实。",
+      "scope": "Paper入场安全和原池行情解析；不改资金期、历史原始成交、已有策略合同、Live锁、API请求数或调度。",
+      "next": "核验服务加载和自然原池刷新；仅在有直接安全证据和受影响BUY ID时执行幂等整生命周期作废。",
+      "report": "docs/PROJECT_CONTEXT/HONEYPOT_AND_ORIGINAL_POOL189_20260916.md"
+    },
+    {
       "id": "20260916-continuous-optimization188",
       "recorded_at": "2026-09-16T06:00:00Z",
       "title": "金狗严格时点漏斗、全策略收敛与持仓取数延迟分解",

@@ -130,6 +130,7 @@ def run(awaitable):
 
 def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     payload = gecko_payload()
+    payload["data"][0]["attributes"]["quote_token_price_usd"] = "0.176661255963878"
     payload["data"][0]["attributes"]["volume_usd"]["h1"] = "120.5"
     payload["data"][0]["attributes"]["transactions"]["h1"] = {"buys": 9, "sells": 4}
     payload["data"][0]["attributes"]["base_token_price_quote_token"] = "0.125"
@@ -142,6 +143,7 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     assert pair["quoteToken"]["address"] == "QUOTE"
     assert pair["dexId"] == "raydium"
     assert pair["priceUsd"] == "0.0123"
+    assert pair["quotePriceUsd"] == pytest.approx(0.176661255963878)
     assert pair["priceNative"] == 0.125
     assert pair["liquidity"]["usd"] == pytest.approx(4567.8)
     assert pair["volume"]["m5"] == pytest.approx(90.5)
@@ -178,6 +180,9 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     unknown_ratio = gecko_payload()
     assert normalize_gecko_pool(unknown_ratio["data"][0], unknown_ratio["included"],
                                 "solana", START)["priceNative"] is None
+    unknown_ratio["data"][0]["attributes"]["quote_token_price_usd"] = "0"
+    assert normalize_gecko_pool(unknown_ratio["data"][0], unknown_ratio["included"],
+                                "solana", START)["quotePriceUsd"] is None
 
 
 @pytest.mark.parametrize("validator", ["etag", "date"])

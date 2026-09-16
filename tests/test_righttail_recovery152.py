@@ -84,10 +84,10 @@ def test_dex_proxy_requires_two_causal_frames_and_preserves_hard_veto(tmp_path, 
         "SELECT payload_json FROM chain_meme_pattern_evidence "
         "WHERE kind='preentry_obvious_scam_v1' ORDER BY id DESC LIMIT 1"
     ).fetchone()[0]
-    assert "SKIP_DEX_PROXY_CONTINUITY" in waiting
-    assert "prior_exact_pool_frame_missing" in waiting
+    assert "SKIP_DEX_PROXY_SECURITY_UNVERIFIED" in waiting
     clock[0] += timedelta(seconds=30)
     second = _snapshot(token, pool, clock[0], price=1.1, liquidity=5200)
+    second.raw['goplus_evm'] = {'cannot_sell': '0'}
     sid = store.add_snapshot(second)
     assert gate.dex_proxy_guard(
         version="v", cohort_id=1, token_id=token.token_id, snapshot_id=sid,
@@ -145,7 +145,9 @@ def test_market_projection_fallback_isolated_to_opt_in_152_arm(tmp_path, monkeyp
     store.upsert_token(token, seen_at=clock[0])
     store.add_snapshot(_snapshot(token, pool, clock[0], price=1.0, liquidity=5000))
     clock[0] += timedelta(seconds=30)
-    sid = store.add_snapshot(_snapshot(token, pool, clock[0], price=1.1, liquidity=5200))
+    second = _snapshot(token, pool, clock[0], price=1.1, liquidity=5200)
+    second.raw["goplus_evm"] = {"cannot_sell": "0"}
+    sid = store.add_snapshot(second)
     with store.db:
         cursor = store.db.execute(
             "INSERT INTO chain_meme_trader_v6_cohorts("

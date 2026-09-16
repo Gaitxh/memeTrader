@@ -2591,16 +2591,30 @@ class Runtime:
         if canonical_token_address(chain, str(base.get("address") or "")) != target:
             if canonical_token_address(chain, str(quote.get("address") or "")) != target:
                 return None, None
+            direct_quote = pair.get("quotePriceUsd")
+            try:
+                quote_usd = float(direct_quote) if direct_quote is not None else None
+                if quote_usd is not None and not (math.isfinite(quote_usd) and quote_usd > 0):
+                    quote_usd = None
+            except (TypeError, ValueError, OverflowError):
+                quote_usd = None
+            direct_valid = quote_usd is not None
             try:
                 base_usd, base_in_quote = float(pair["priceUsd"]), float(pair["priceNative"])
-                quote_usd = base_usd / base_in_quote
-                if not all(math.isfinite(x) and x > 0 for x in (base_usd, base_in_quote, quote_usd)):
+                ratio_valid = all(math.isfinite(x) and x > 0 for x in (base_usd, base_in_quote))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                base_usd, base_in_quote, ratio_valid = None, None, False
+            if quote_usd is None:
+                if not ratio_valid:
                     return None, None
-            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                quote_usd = base_usd / base_in_quote
+            method = ("same_pool_reported_quote_usd" if direct_valid else
+                      "same_pool_base_usd_divided_by_base_in_quote")
+            if not math.isfinite(quote_usd) or quote_usd <= 0:
                 return None, None
             # Counts and metadata refer to the reported base, not the held quote.
             oriented = {**pair, "baseToken": quote, "quoteToken": base,
-                "priceUsd": quote_usd, "priceNative": 1 / base_in_quote,
+                "priceUsd": quote_usd, "priceNative": 1 / base_in_quote if ratio_valid else None,
                 "marketCap": None, "fdv": None, "info": {},
                 "txns": {k: {"buys": v.get("sells"), "sells": v.get("buys")}
                     for k, v in (pair.get("txns") or {}).items() if isinstance(v, dict)}}
@@ -2608,9 +2622,9 @@ class Runtime:
         snapshot = (Runtime._complement_snapshot(oriented) if pair.get("observedAt")
                     else DexScreenerClient._snapshot(oriented))
         if token and snapshot and oriented is not pair:
-            snapshot.raw = {"pair": pair, "target_pricing": {
+            snapshot.raw = {**snapshot.raw, "pair": pair, "target_pricing": {
                 "token_id": target_token_id, "side": "quote",
-                "method": "same_pool_base_usd_divided_by_base_in_quote",
+                "method": method,
                 "base_price_usd": base_usd, "base_in_quote": base_in_quote}}
             token.raw = dict(snapshot.raw)
         return token, snapshot

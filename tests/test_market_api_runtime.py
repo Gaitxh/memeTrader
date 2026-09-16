@@ -1100,6 +1100,58 @@ def test_first_pool_failure_then_same_pool_quote_side_recovery(tmp_path):
     asyncio.run(scenario())
 
 
+def test_exact_gecko_quote_side_price_recovers_original_pool_without_other_pool(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        held = TokenCandidate("solana", "E" * 32, "Held quote", "HELD")
+        base = TokenCandidate("solana", "T" * 32, "Pool base", "BASE")
+        pool = "original-pool"
+        target = target_for(held, pool)
+        pair = pair_payload(base, pool, provider="geckoterminal")
+        pair.update(
+            quoteToken={"address": held.address, "name": held.name, "symbol": held.symbol},
+            priceUsd="0", priceNative=0, quotePriceUsd=0.176661255963878,
+            liquidity={"usd": 5109.8290882654},
+        )
+        token, snapshot = runtime._held_pool_quote(pair, held.token_id)
+        assert token.token_id == held.token_id
+        assert snapshot.price_usd == pytest.approx(0.176661255963878)
+        assert snapshot.liquidity_usd == pytest.approx(5109.8290882654)
+        assert snapshot.raw["target_pricing"]["method"] == "same_pool_reported_quote_usd"
+        assert not runtime._held_pool_quote_rejections(held.token_id, token, snapshot, utcnow())
+        assert runtime._held_pool_quote({**pair, "quotePriceUsd": 0}, held.token_id) == (None, None)
+        assert runtime._held_pool_quote({**pair, "quotePriceUsd": float("nan")}, held.token_id) == (None, None)
+        assert runtime._held_pool_quote(pair, "bsc:" + held.address) == (None, None)
+        wrong_quote = {**pair, "quoteToken": {**pair["quoteToken"], "address": "X" * 32}}
+        assert runtime._held_pool_quote(wrong_quote, held.token_id) == (None, None)
+        stale = {**pair, "raw": {"http_cache": {"age": "60", "received_at": iso(utcnow())}}}
+        stale_token, stale_snapshot = runtime._held_pool_quote(stale, held.token_id)
+        assert "quote_upstream_cache_stale" in runtime._held_pool_quote_rejections(
+            held.token_id, stale_token, stale_snapshot, utcnow())
+        dry = {**pair, "liquidity": {"usd": None}}
+        dry_token, dry_snapshot = runtime._held_pool_quote(dry, held.token_id)
+        assert "quote_liquidity_unavailable" in runtime._held_pool_quote_rejections(
+            held.token_id, dry_token, dry_snapshot, utcnow())
+
+        async def public_exact(chain, pools):
+            assert chain == "solana" and pools == [pool]
+            return {pool: pair}
+        runtime.gecko_pools.get_pools = public_exact
+        runtime.coingecko = FakeCoinGecko(available=False)
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: None
+        runtime._queue_market_pool_gap(target, pool, [])
+        await runtime.complementary_market_data_once()
+        row = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (held.token_id, pool),
+        ).fetchone()
+        assert row["status"] == "VISIBLE" and row["price_usd"] == pytest.approx(0.176661255963878)
+        assert row["liquidity_usd"] == pytest.approx(5109.8290882654)
+        await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_token_endpoint_gap_after_restart_is_not_original_pool_absence(tmp_path):
     async def scenario():
         runtime = make_runtime(tmp_path)

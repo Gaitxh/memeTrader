@@ -30,6 +30,15 @@ def test_missing_reports_are_unknown_and_simulation_failure_not_honeypot():
     assert result['status']=='UNKNOWN' and result['reasons']==[]
 
 
+def test_confirmed_honeypot_overrides_clear_sellability_fact():
+    token=TokenCandidate('bsc','0x'+'12'*20,'Risk','RISK',source='fixture')
+    snap=_snapshot(token,'0x'+'34'*20,utcnow())
+    snap.raw['goplus_evm']={'cannot_sell':'0','is_honeypot':'1'}
+    result=assess(snap,None,source_at=iso())
+    assert result['status']=='REJECT' and not result['allow']
+    assert 'is_honeypot' in result['hard_veto']
+
+
 def test_solana_explicit_control_and_no_lp_lock_false_reject():
     token=TokenCandidate('solana','Token','Risk','RISK',source='fixture')
     snap=_snapshot(token,'Pool',utcnow())
@@ -38,6 +47,20 @@ def test_solana_explicit_control_and_no_lp_lock_false_reject():
     snap.raw['goplus_solana']={'freezable':{'status':'0'}}
     result=assess(snap,SafetyChecker,source_at=iso())
     assert not result['reasons'] and result['status']=='UNKNOWN'
+
+
+def test_solana_complete_controls_required_and_transfer_hook_vetoed():
+    token=TokenCandidate('solana','Token','Risk','RISK',source='fixture')
+    snap=_snapshot(token,'Pool',utcnow())
+    controls=('mintable','freezable','closable','balance_mutable_authority',
+              'transfer_fee_upgradable','transfer_hook_upgradable',
+              'default_account_state_upgradable')
+    snap.raw['goplus_solana']={field:{'status':'0'} for field in controls}
+    assert assess(snap,SafetyChecker,source_at=iso())['allow']
+    snap.raw['goplus_solana']['transfer_hook']=[{'program_id':'danger'}]
+    result=assess(snap,SafetyChecker,source_at=iso())
+    assert result['status']=='REJECT' and not result['allow']
+    assert 'transfer_hook_present' in result['hard_veto']
 
 
 def test_pending_security_retains_intent_requires_later_frame_and_no_old_report_refresh(tmp_path,monkeypatch):
@@ -87,12 +110,17 @@ def test_provider_presence_without_usable_fact_cannot_authorize(payload):
     assert result['status']=='UNKNOWN' and not result['allow']
     assert result['usable_facts']==[] and result['hard_veto']==[]
 
-@pytest.mark.parametrize('payload',[{'is_honeypot':'0'},{'cannot_sell':'0'},{'cannot_sell_all':'0'}])
-def test_one_known_safety_fact_is_sufficient_without_all_fields(payload):
+@pytest.mark.parametrize('payload,allowed',[
+    ({'is_honeypot':'0'},True),({'cannot_sell':'0'},True),
+    ({'cannot_sell_all':'0'},False),({'hidden_owner':'0'},False),
+    ({'honeypot_with_same_creator':'0'},False),
+])
+def test_buy_needs_sellability_fact_not_unrelated_clear_flag(payload,allowed):
     token=TokenCandidate('bSC'.lower(),'0x'+'12'*20,'Risk','RISK',source='fixture')
     snap=_snapshot(token,'0x'+'34'*20,utcnow());snap.raw['goplus_evm']=payload
     result=assess(snap,None,source_at=iso())
-    assert result['status']=='UNKNOWN' and result['allow'] and result['usable_facts']
+    assert result['status'] in {'UNKNOWN','WEAK'}
+    assert result['allow'] is allowed and result['usable_facts']
 
 def test_solana_empty_reports_wait_but_resolved_control_can_allow_unknown_custody():
     token=TokenCandidate('solana','Token','Risk','RISK',source='fixture')
@@ -100,7 +128,7 @@ def test_solana_empty_reports_wait_but_resolved_control_can_allow_unknown_custod
     assert not assess(snap,SafetyChecker,source_at=iso())['allow']
     snap.raw['goplus_solana']={'freezable':{'status':'0'}}
     r=assess(snap,SafetyChecker,source_at=iso())
-    assert r['allow'] and r['status']=='UNKNOWN' and r['usable_facts']
+    assert not r['allow'] and r['status']=='UNKNOWN' and r['usable_facts']
 
 def test_empty_report_retries_only_after_existing_cache_ttl(tmp_path,monkeypatch):
     clock=[utcnow()]
@@ -131,7 +159,7 @@ def test_bsc_weak_facts_do_not_authorize(payload):
     assert assess(snap,None,source_at=iso())['status']=='REJECT'
 
 
-@pytest.mark.parametrize('second,allowed', [({'cannot_sell_all':'0'},True),({'sell_tax':'0'},False),({},False),({'is_honeypot':'1'},False)])
+@pytest.mark.parametrize('second,allowed', [({'cannot_sell':'0'},True),({'cannot_sell_all':'0'},False),({'sell_tax':'0'},False),({},False),({'is_honeypot':'1'},False)])
 def test_weak_retry_once_persisted_and_shadow(tmp_path,monkeypatch,second,allowed):
     clock=[utcnow()]
     for module in ('store','models','preentry_safety'):

@@ -108,6 +108,7 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
     if not identity: reasons.append('canonical_surface_identity_mismatch')
     if chain in {'bsc','robinhood'}:
         g=raw.get('goplus_evm'); h=raw.get('honeypot_is')
+        sellability_facts=[]
         if isinstance(g,dict):
             sources.append('goplus_evm')
             for field in EVM_FLAGS:
@@ -115,7 +116,10 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
                 value=flag(g.get(field))
                 if value is True:reasons.append(field)
                 elif value is None:unknown.append(field)
-                else:usable.append('goplus_evm:'+field+'=false')
+                else:
+                    fact='goplus_evm:'+field+'=false'
+                    usable.append(fact)
+                    if field in {'is_honeypot','cannot_sell'}:sellability_facts.append(fact)
             for field in ('buy_tax','sell_tax'):
                 try:
                     if isinstance(g[field],bool):raise ValueError('invalid tax')
@@ -129,7 +133,9 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
             sources.append('honeypot_is')
             honeypot=flag((h.get('honeypotResult') or {}).get('isHoneypot'))
             if honeypot is True:reasons.append('honeypot')
-            elif honeypot is False:usable.append('honeypot_is:isHoneypot=false')
+            elif honeypot is False and h.get('simulationSuccess') is not False:
+                usable.append('honeypot_is:isHoneypot=false')
+                sellability_facts.append('honeypot_is:isHoneypot=false')
             # A generic simulation failure is UNKNOWN, not proof of sell failure.
             if h.get('simulationSuccess') is False:unknown.append('simulation_failed_unknown_cause')
             for field in ('buyTax','sellTax'):
@@ -137,9 +143,11 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
                 if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>=0:
                     if value>max_tax:reasons.append(field+'_above_existing_tax_limit')
                     else:usable.append('honeypot_is:'+field+'='+str(value)+'pct')
+        if not sellability_facts:unknown.append('sellability_not_cleared')
     elif chain=='solana':
         old=checker.solana_pretrade_rug_assessment(snapshot)
-        for field,value in (old.get('facts',{}).get('token_controls') or {}).items():
+        controls=old.get('facts',{}).get('token_controls') or {}
+        for field,value in controls.items():
             if value is False:usable.append('solana_control:'+field+'=false')
         if flag((raw.get('rugcheck') or {}).get('rugged')) is False:
             usable.append('rugcheck:rugged=false')
@@ -147,7 +155,10 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
         # Only explicit dangerous token controls/verified mismatches. No LP-lock,
         # whale concentration, or global exact-route/depth requirement.
         reasons += [r for r in hard if r.startswith('dangerous_') or r in
-            {'non_transferable','malicious_creator','pool_identity_mismatch','pool_custody_mismatch'}]
+            {'non_transferable','transfer_hook_present','malicious_creator',
+             'pool_identity_mismatch','pool_custody_mismatch'}]
+        if not controls or any(value is not False for value in controls.values()):
+            unknown.append('token_controls_not_cleared')
         for name in ('goplus_solana','rugcheck'):
             if isinstance(raw.get(name),dict):sources.append(name)
         if (raw.get('rugcheck') or {}).get('rugged') is True:reasons.append('rugged')
@@ -167,12 +178,13 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
             unknown.append('closed_source_unverified')
     elif chain not in {'bsc','solana'}:unknown.append('chain_unsupported')
     if not usable:unknown.append('no_usable_safety_fact')
-    strong = [x for x in usable if x == 'honeypot_is:isHoneypot=false' or
-              x.startswith('goplus_evm:') and x.endswith('=false') and 'honeypot_with_same_creator' not in x]
+    strong = ([x for x in usable if x in sellability_facts]
+              if chain in {'bsc','robinhood'} else usable)
     weak = chain == 'bsc' and bool(usable) and not strong
     if weak:unknown.append('bsc_only_weak_safety_facts')
     status='REJECT' if reasons else 'WEAK' if weak else 'UNKNOWN' if unknown or not sources else 'PASS'
-    allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
+    allow=not reasons and bool(strong) and 'protocol_surface_unsupported' not in unknown
+    if chain=='solana' and 'token_controls_not_cleared' in unknown:allow=False
     if weak:allow=False
     from .market_microstructure import honeypot_pool_receipt
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
@@ -394,6 +406,9 @@ class PreentrySafety:
         behavior = self.behavior(item, decision_at)
         original = self.store.token_snapshot_by_id(snapshot_id)
         known = assess(original, self.checker, source_at=iso(original.observed_at))
+        cached = self.cache.get((token_id,pool))
+        cached_asof = bool(cached and cached.get('source_at') and
+            parse_time(cached['source_at'])<=decision_at<parse_time(cached['source_at'])+timedelta(seconds=45))
         veto = []
         if scope["status"] == "EXCLUDED_NON_MEME_RWA":
             veto.append(scope["reason"])
@@ -402,10 +417,18 @@ class PreentrySafety:
         veto.extend(behavior["hard_veto"])
         veto.extend(behavior["soft_hazard"])
         veto.extend(known["hard_veto"])
+        if cached_asof:veto.extend(cached.get('hard_veto') or [])
         if veto:
             self.record(item, "REJECT_DEX_PROXY", dict(
                 version=SAFETY_PROXY, status="REJECT", allow=False,
                 reasons=sorted(set(veto)), source_at=iso(observed),
+                external_assessment=known, not_a_safety_guarantee=True,
+            ))
+            return False
+        if not (known['allow'] or cached_asof and cached.get('allow')):
+            self.record(item, 'SKIP_DEX_PROXY_SECURITY_UNVERIFIED', dict(
+                version=SAFETY_PROXY, status='SKIP', allow=False,
+                reasons=['sellability_or_token_controls_not_cleared'], source_at=iso(observed),
                 external_assessment=known, not_a_safety_guarantee=True,
             ))
             return False
