@@ -27,6 +27,8 @@ Purpose: improve risk-adjusted *natural Paper* net results after costs, failed e
 
 At the later post-213 readback, the first 212 position closed +12.6213U net but was unpaired; all seven 209 positions closed -41.2301U total net. These supersede the earlier partial-window counts in rows 07-08 for current-state purposes. No strategy is yet proven profitable.
 
+Stage214 added a separate same-migration-pool second-frame persistence entry trial at `2026-09-16T18:54:51Z` (frontier981803), loaded as policy 507 and still at zero natural positions by frontier981985. The apparent `entry_family_has_no_policy` funnel gap is largely correctly paused, heavily losing R93 arms; do not clone/restart them merely for trade volume. Six admitted/no-source-fill cohorts remain unattributed. Details in `docs/PROJECT_CONTEXT/MIGRATION_CONFIRM214_20260917.md`.
+
 ## Immediate order
 
 1. **P0 conversion:** use new post-query-fix natural windows to distinguish family-policy absence, exact-pool next-frame failure, safety disposition, source BUY failure and account projection failure. Fix the first *observed* blocking mechanism without weakening the 1000U floor, identity or as-of checks.

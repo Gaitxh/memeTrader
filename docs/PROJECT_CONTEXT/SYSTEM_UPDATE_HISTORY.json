@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-migration-second-frame214",
+      "recorded_at": "2026-09-16T18:56:00Z",
+      "title": "迁移新池新增后帧持续性模拟策略，纠正无策略漏斗归因",
+      "problem": "209早入场七个独立币全部平仓净亏41.2301U；30分钟漏斗有1813次有原池报价却无可用族别策略，但现有宽口径臂多因真实亏损暂停，不能直接复活。另六个已准入cohort无源成交终点记录。",
+      "change": "追加独立Paper臂migration214_pool_persistence_v1：209首报价信号后8–90秒要求同DexScreener原池价格、流动性和买卖活动继续，再等下一帧正常模拟成交；沿用旧runner退出与20U规模，不影响其他策略。",
+      "rationale": "以自然前向结果检验短延迟确认能否减少迁移首池假突破，同时记录错过赢家的代价；不重新开启已亏损退役的market_visible策略，也不把无成交误说成安全拒绝。",
+      "validation": "214定向3项及209相邻3项测试通过；18:54:51Z/快照981803激活，PID103840加载507臂及runtime/store/214源码哈希，后续快照981985，214自然仓位0；健康、实时、性能接口可用，Paper运行、Live锁定、原资金期未变。",
+      "scope": "仅新增有界本地特征与独立前向Paper臂；无新行情API、定时任务、实盘、历史改账或资金重置。",
+      "status": "工程已部署；自然成交及扣成本效果待观察；六个准入无源成交终点仍需归因",
+      "next": "手动比较209触发到214确认/成交/退出的独立代币净分布和漏掉的赢家，并补齐六个无成交cohort的实际终点证据。",
+      "report": "docs/PROJECT_CONTEXT/MIGRATION_CONFIRM214_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/MIGRATION_CONFIRM214_20260917.md",
+      "runtime_verification": "2026-09-16约18:55Z，PID103840、507臂、三源码哈希匹配。"
+    },
+    {
       "id": "20260917-washout-paired-control213",
       "recorded_at": "2026-09-16T18:46:00Z",
       "title": "洗出回收退出试验补齐同期模拟对照账户",

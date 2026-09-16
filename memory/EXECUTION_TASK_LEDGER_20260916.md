@@ -1,5 +1,9 @@
 # Full-chain execution ledger, 2026-09-16
 
+### Stage 214: migration pool persistence entry trial, 2026-09-17
+
+R02/R06/R07/R10/R12 remain open. The 18:12-18:42Z bounded funnel found 878 first-local tokens, 4,967 V6 evaluations/956 tokens, 3,987 valid fresh >=1000U pool evaluations/376 tokens, 39 cohorts/15 tokens, 16 source-filled cohorts/11 tokens, 29 projected position rows/11 tokens. The 1,813 no-policy terminal evaluations are mostly genuinely retired/paused R93 family arms after large natural losses, **not** proof of 1,813 missed profitable trades. Six admitted/no-fill cohorts lack terminal evidence and remain unresolved. All seven 209 positions closed -41.2301U net. A distinct second-frame same-migration-pool Paper arm 214 was added without new API, hindsight, history rewrite or re-funding. Six targeted/adjacent tests pass; at activation 18:54:51Z/981803, PID103840 loaded 507 policies and matching source hashes. At next frontier981985, 214 natural positions zero; profitability PENDING_FORWARD. Report: `docs/PROJECT_CONTEXT/MIGRATION_CONFIRM214_20260917.md`.
+
 ### Stage 213: restore a contemporary washout exit control, 2026-09-17
 
 Later readback: the initial unpaired 212 position closed at `2026-09-16T18:46:24.932028Z` for +12.6213U net realized (`confirmed_pre_reclaim_anchor_loss212:dex_mark_paper_fill`). All seven 209 distinct-token positions were then closed for -41.2301U total net realized. These are natural Paper observations, not proof of either arm's expectancy; the 212 result predates its contemporary control.
