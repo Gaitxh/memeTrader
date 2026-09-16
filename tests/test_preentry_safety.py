@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from memetrader.models import TokenCandidate, iso, utcnow
-from memetrader.preentry_safety import EVM_FLAGS, PreentrySafety, assess
+from memetrader.preentry_safety import EVM_FLAGS, PreentrySafety, assess, dex_buy_only_evidence
 from memetrader.store import Store
 from memetrader.strategy import SafetyChecker
 from test_paper_execution import _snapshot
@@ -37,6 +37,37 @@ def test_confirmed_honeypot_overrides_clear_sellability_fact():
     result=assess(snap,None,source_at=iso())
     assert result['status']=='REJECT' and not result['allow']
     assert 'is_honeypot' in result['hard_veto']
+
+
+def test_fresh_dex_buy_only_window_waits_without_claiming_honeypot(tmp_path,monkeypatch):
+    clock=[utcnow()]
+    for module in ('store','models','preentry_safety'):
+        monkeypatch.setattr('memetrader.'+module+'.utcnow',lambda:clock[0])
+    store=Store(tmp_path/'buy_only.sqlite3',initial_cash_usd=1000)
+    token=TokenCandidate('bsc','0x'+'12'*20,'Buy only','BUY',source='fixture')
+    pool='0x'+'34'*20
+    store.upsert_token(token,seen_at=clock[0])
+    snap=_snapshot(token,pool,clock[0])
+    snap.buys_5m=4;snap.sells_5m=0
+    snap.raw['pair']['txns']['m5']={'buys':4,'sells':0}
+    snap.raw['goplus_evm']={'cannot_sell':'0'}
+    sid=store.add_snapshot(snap)
+    clock[0]+=timedelta(seconds=1)
+    row=store.db.execute('SELECT * FROM token_snapshots WHERE id=?',(sid,)).fetchone()
+    evidence=dex_buy_only_evidence(row,token.token_id,iso(clock[0]))
+    assert evidence['buys_5m']==4 and evidence['sells_5m']==0
+    assert evidence['not_honeypot_proof']
+    gate=PreentrySafety(store,SimpleNamespace(config={}))
+    assert not gate.guard(version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION,cohort_id=1,
+        token_id=token.token_id,snapshot_id=sid,filled_at=iso(clock[0]),
+        definition={'policy_notional_usd':20,'policies':[]},reason='fixture')
+    payload=store.db.execute('SELECT payload_json FROM chain_meme_pattern_evidence '
+        'WHERE kind=? ORDER BY id DESC LIMIT 1',('preentry_obvious_scam_v1',)).fetchone()[0]
+    assert 'WAIT_DEX_BUY_ONLY' in payload and 'not_honeypot_proof' in payload
+    cleared=dict(row);cleared['sells_5m']=1
+    assert dex_buy_only_evidence(cleared,token.token_id,iso(clock[0])) is None
+    assert dex_buy_only_evidence(row,token.token_id,iso(clock[0]+timedelta(seconds=16))) is None
+    store.close()
 
 
 def test_solana_explicit_control_and_no_lp_lock_false_reject():

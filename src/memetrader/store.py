@@ -27180,6 +27180,26 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_trajectory_exit190(self) -> int:
+        """Append one same-entry first-mark trailing Paper challenger."""
+        from .trajectory_exit190 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            parent = next((item for item in definition["policies"]
+                           if item.get("arm_id") == PARENT), None)
+            if parent is None or any(item.get("arm_id") == ARM
+                                     for item in definition["policies"]):
+                return 0
+            self.append_chain_meme_trader_policy(policy(parent), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162

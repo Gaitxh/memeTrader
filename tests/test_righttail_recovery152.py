@@ -88,7 +88,24 @@ def test_dex_proxy_requires_two_causal_frames_and_preserves_hard_veto(tmp_path, 
     clock[0] += timedelta(seconds=30)
     second = _snapshot(token, pool, clock[0], price=1.1, liquidity=5200)
     second.raw['goplus_evm'] = {'cannot_sell': '0'}
+    second.buys_5m = 4
+    second.sells_5m = 0
+    second.raw['pair']['txns']['m5'] = {'buys': 4, 'sells': 0}
     sid = store.add_snapshot(second)
+    assert not gate.dex_proxy_guard(
+        version="v", cohort_id=1, token_id=token.token_id, snapshot_id=sid,
+        filled_at=iso(clock[0]), definition=definition, reason="test",
+        funding_mode="paper", signal_price_usd=1.0,
+    )
+    buy_only = store.db.execute(
+        "SELECT payload_json FROM chain_meme_pattern_evidence "
+        "WHERE kind='preentry_obvious_scam_v1' ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    assert "WAIT_DEX_BUY_ONLY" in buy_only
+    clock[0] += timedelta(seconds=30)
+    third = _snapshot(token, pool, clock[0], price=1.2, liquidity=5400)
+    third.raw['goplus_evm'] = {'cannot_sell': '0'}
+    sid = store.add_snapshot(third)
     assert gate.dex_proxy_guard(
         version="v", cohort_id=1, token_id=token.token_id, snapshot_id=sid,
         filled_at=iso(clock[0]), definition=definition, reason="test",

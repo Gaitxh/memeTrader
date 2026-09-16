@@ -99,6 +99,34 @@ def flag(value):
     return None
 
 
+def dex_buy_only_evidence(row, token_id, decision_at):
+    """A fresh exact-pool buy-only window is a wait signal, not honeypot proof."""
+    if row is None:return None
+    try:
+        data=dict(row)
+        chain,address=token_id.split(':',1)
+        pair=json.loads(data['raw_json']).get('pair') or {}
+        observed=parse_time(data['observed_at'])
+        ingested=parse_time(data['ingested_at'])
+        recorded=parse_time(data['recorded_at'])
+        decision=parse_time(decision_at)
+        buys,sells=int(data['buys_5m']),int(data['sells_5m'])
+        pool=canonical_token_address(chain,str(pair.get('pairAddress') or ''))
+        if not (data['token_id']==token_id and 'dexscreener' in str(data['provider']).lower()
+            and pool and pair.get('chainId')==chain
+            and canonical_token_address(chain,str((pair.get('baseToken') or {}).get('address') or ''))
+                ==canonical_token_address(chain,address)
+            and observed<=ingested<=recorded<=decision
+            and (decision-observed).total_seconds()<=15
+            and buys>=4 and sells==0):
+            return None
+        return dict(source_at=iso(observed),recorded_at=iso(recorded),
+            snapshot_id=int(data['id']),pool=pool,buys_5m=buys,sells_5m=sells,
+            reason='dex_buy_only_5m',not_honeypot_proof=True)
+    except (KeyError,TypeError,ValueError,json.JSONDecodeError):
+        return None
+
+
 def assess(snapshot, checker, *, source_at, max_tax=12):
     from .evm_lp_custody import assess_lp
     raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[];usable=[];soft=[]
@@ -315,6 +343,14 @@ class PreentrySafety:
             if known['status']=='REJECT':
                 self.record(item,'REJECT_EXISTING_EVIDENCE',known)
                 return False
+        buy_only=dex_buy_only_evidence(row,token_id,filled_at)
+        if buy_only:
+            if str(cohort_id) not in self.pending and len(self.pending)<128:
+                self.pending[str(cohort_id)]=item;self.save()
+            self.record(item,'WAIT_DEX_BUY_ONLY',dict(version=VERSION,status='WAIT',allow=False,
+                reasons=['dex_buy_only_5m'],source_at=buy_only['source_at'],
+                dex_flow=buy_only,not_honeypot_proof=True))
+            return False
         cached=self.cache.get((token_id,pool))
         if cached and parse_time(cached['source_at'])<=parse_time(filled_at)<parse_time(cached['source_at'])+timedelta(seconds=45):
             if cached['status']=='REJECT':self.record(item,'REJECT',cached);return False
@@ -424,6 +460,15 @@ class PreentrySafety:
                 reasons=sorted(set(veto)), source_at=iso(observed),
                 external_assessment=known, not_a_safety_guarantee=True,
             ))
+            return False
+        buy_only=dex_buy_only_evidence(row,token_id,filled_at)
+        if buy_only:
+            if str(cohort_id) not in self.pending and len(self.pending)<128:
+                self.pending[str(cohort_id)]=item;self.save()
+            self.record(item,'WAIT_DEX_BUY_ONLY',dict(
+                version=SAFETY_PROXY,status='WAIT',allow=False,
+                reasons=['dex_buy_only_5m'],source_at=buy_only['source_at'],
+                dex_flow=buy_only,not_honeypot_proof=True))
             return False
         if not (known['allow'] or cached_asof and cached.get('allow')):
             self.record(item, 'SKIP_DEX_PROXY_SECURITY_UNVERIFIED', dict(

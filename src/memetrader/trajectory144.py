@@ -192,7 +192,8 @@ class Engine:
                 out[arm] = deepcopy(state["signals"][arm])
         from .trend_moonbag169 import alias_signals
         from .trajectory_regime187 import alias_signals as alias_regime187
-        return alias_regime187(alias_signals(out))
+        from .trajectory_exit190 import alias_signals as alias_exit190
+        return alias_exit190(alias_regime187(alias_signals(out)))
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}
