@@ -39,6 +39,21 @@ def test_same_pool_depth_crossing_can_signal_before_price_momentum():
                           start + timedelta(seconds=91), floor=1000) is None
 
 
+def test_different_providers_cannot_create_a_false_depth_crossing():
+    start = utcnow()
+    tracker = Tracker(start - timedelta(seconds=1))
+    low = frame(start, .06)
+    low["provider"] = "dexscreener"
+    assert tracker.accept(low, start, floor=1000) is None
+    gecko_high = frame(start + timedelta(seconds=60), 3000)
+    assert tracker.accept(gecko_high, start + timedelta(seconds=60), floor=1000) is None
+    dex_high = frame(start + timedelta(seconds=90), 3000)
+    dex_high["provider"] = "dexscreener"
+    signal = tracker.accept(dex_high, start + timedelta(seconds=90), floor=1000)
+    assert signal is not None
+    assert signal["decision_evidence"]["provider"] == "dexscreener"
+
+
 def test_missing_low_other_pool_stale_or_buy_only_never_crosses():
     start = utcnow()
     tracker = Tracker(start - timedelta(seconds=1))

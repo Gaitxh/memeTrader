@@ -49,7 +49,7 @@ def policy(parent: Mapping[str, Any], arm: str = ARM) -> dict[str, Any]:
         observer_only=False, affects="paper_only", live=False,
         no_historical_backfill=True,
         description=(
-            f"{VERSION}: one fresh same-pool numeric below-floor frame followed within "
+            f"{VERSION}: one fresh same-pool, same-provider numeric below-floor frame followed within "
             "300s by the first >=2x-floor frame, pool age <=600s, positive price "
             "and buy share >=50% with at least one sell. The independent tracker "
             "requires distinct causal frames; ordinary safety and next-frame Paper "
@@ -84,7 +84,7 @@ class Tracker:
 
     def __init__(self, started_at: Any):
         self.started_at = parse_time(started_at)
-        self.pools: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+        self.pools: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
 
     def accept(self, frame: Mapping[str, Any], now: Any, *, floor: float) -> dict[str, Any] | None:
         try:
@@ -104,9 +104,10 @@ class Tracker:
         liquidity = _number(frame.get("liquidity_usd"))
         age = _number(frame.get("pool_age_seconds"))
         threshold = _number(floor)
+        provider = str(frame.get("provider") or "")
         if not (chain in {"solana", "bsc", "robinhood"}
                 and token_id.startswith(chain + ":") and address and pool
-                and str(frame.get("provider") or "").startswith(("dexscreener", "geckoterminal"))
+                and provider.startswith(("dexscreener", "geckoterminal"))
                 and self.started_at <= observed <= ingested <= recorded <= decision_at
                 and (decision_at - observed).total_seconds() <= 45
                 and price is not None and price > 0
@@ -114,7 +115,9 @@ class Tracker:
                 and age is not None and 0 <= age <= MAX_POOL_AGE_SECONDS
                 and threshold is not None and threshold > 0):
             return None
-        identity = (token_id, pool)
+        # The same pool can have incompatible provider liquidity estimates.
+        # A cross-provider jump is not evidence that executable depth grew.
+        identity = (token_id, pool, provider)
         for key, state in list(self.pools.items()):
             if (decision_at - state["last_at"]).total_seconds() > MAX_CROSS_SECONDS:
                 del self.pools[key]
@@ -160,7 +163,7 @@ class Tracker:
             "elapsed_seconds": elapsed,
             "buys_5m": int(buys), "sells_5m": int(sells),
             "effective_pool_floor_usd": threshold,
-            "provider": str(frame["provider"]),
+            "provider": provider,
             "chain": chain, "token_id": token_id, "pair_address": pool,
         }
         return {
