@@ -3127,9 +3127,28 @@ class Runtime:
             if (
                 set(quote_rejections) - curve_missing_fields
                 or m5_trades < 3
-                or age_seconds >= 90 * 60
             ):
                 return {}
+            if token.chain == "solana":
+                migration = self.store.db.execute(
+                    "SELECT source_observed_at,ingested_at,recorded_at "
+                    "FROM token_launch_facts WHERE token_id=? "
+                    "AND launch_provider='pumpportal' AND launch_event_type='migration' "
+                    "AND source_observed_at<=ingested_at AND ingested_at<=recorded_at "
+                    "AND recorded_at<=? ORDER BY source_observed_at DESC,id DESC LIMIT 1",
+                    (token.token_id, iso(now)),
+                ).fetchone()
+                if migration is not None:
+                    try:
+                        event_at, ingested_at, recorded_at = (
+                            parse_time(migration[key]) for key in (
+                                "source_observed_at", "ingested_at", "recorded_at")
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        if event_at <= ingested_at <= recorded_at <= now:
+                            until = max(until, recorded_at + timedelta(hours=3))
             refresh_seconds = 5 * 60
             next_at = now + timedelta(seconds=refresh_seconds)
             return (

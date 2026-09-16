@@ -2,6 +2,36 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-migration-pool-followup208",
+      "recorded_at": "2026-09-16T17:58:00Z",
+      "title": "迁移币旧曲线池补采改按迁移回执限时跟踪",
+      "problem": "三例迁移币数秒内完成首采却只得到无流动性的另一曲线池；现有曲线补采按曲线创建后90分钟截止，老曲线在新迁移时无法继续发现新池。",
+      "change": "仅对当时已入库且三时钟合法的PumpPortal迁移事实，把原有五分钟共享补采窗口延至迁移入库后最多三小时，继续使用原批量额度。",
+      "rationale": "修复迁移后池可见性机会，仍需实际新报价、原池、可卖性与后帧成交；事后建池时间不能充当当时可交易证据。",
+      "validation": "新测试2项及原有新鲜补采测试通过；另一个既有Store容量测试在未改动选队逻辑上失败，未报告为通过。PID106804加载代码，快照972474到972791，资金期不变，Paper及Live锁定正常。",
+      "scope": "共享数据获取的有界补采；不新增API、调度任务、策略信号、账户资金、实盘许可或历史成交。",
+      "status": "代码已部署、工程边界已验证；自然新池检出率、采集延迟、净收益和同负载资源影响尚待观察",
+      "next": "手动比较迁移回执到首次真实Pumpswap报价、后帧入场和普通对照；核验50%补采预算下新币首帧与持仓优先级没有退化。",
+      "report": "docs/PROJECT_CONTEXT/MIGRATION_POOL_FOLLOWUP208_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/MIGRATION_POOL_FOLLOWUP208_20260917.md",
+      "runtime_verification": "2026-09-16 17:56:53Z PID106804；/health、/api/live、/api/performance可用；历史仓位行数38800不变。"
+    },
+    {
+      "id": "20260917-activity-interval-validity207",
+      "recorded_at": "2026-09-16T17:50:00Z",
+      "title": "修正老币活跃度策略的滚动买卖窗口矛盾",
+      "problem": "193/200策略的1小时总数减5分钟总数可能掩盖买入或卖出分量的矛盾，错误生成11倍活跃度信号。",
+      "change": "共享入口分别要求1小时买入不少于5分钟买入、1小时卖出不少于5分钟卖出；异常帧不占用下次有效信号。",
+      "rationale": "同一时点嵌套窗口必须分量一致，不能把来源字段矛盾当成可交易加速。",
+      "validation": "193/200定向测试7项通过；运行进程加载源码哈希一致，资金期不变，快照前沿971344到971498，历史仓位38800行不变。",
+      "scope": "Paper策略输入真实性修复；不改原账户、既有成交、退出、1000U池底线、API请求或Live锁定。",
+      "status": "工程已部署并验证；新前向信号发生率、净收益及与旧边界的差异尚待自然样本",
+      "next": "手动核验后续有效/异常区间、193/200配对安全通过率、净收益与洗出率，不能把历史交易并入修复后效果。",
+      "report": "docs/PROJECT_CONTEXT/ACTIVITY_INTERVAL_VALIDITY207_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ACTIVITY_INTERVAL_VALIDITY207_20260917.md",
+      "runtime_verification": "PID88208；2026-09-16 17:49:04Z加载；/health、/api/live、/api/performance可用，Paper=true，Live locked。"
+    },
+    {
       "id": "20260917-same-pool-created-gap206",
       "recorded_at": "2026-09-16T17:39:00Z",
       "title": "把金狗发现等待拆成建池等待和待查采集延迟",

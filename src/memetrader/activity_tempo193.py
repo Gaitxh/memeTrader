@@ -131,7 +131,8 @@ class Tracker:
             return None
         recent = buys5 + sells5
         prior = buys1 + sells1 - recent
-        if not (recent >= 15 and sells5 >= 1 and buys5 / recent >= .55
+        if not (buys1 >= buys5 and sells1 >= sells5
+                and recent >= 15 and sells5 >= 1 and buys5 / recent >= .55
                 and prior >= 11 and recent * 11 / prior >= 3):
             return None
         identity = (token_id, pool)

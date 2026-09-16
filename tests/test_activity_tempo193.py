@@ -72,6 +72,20 @@ def test_missing_stale_buy_only_underfunded_or_nonaccelerating_never_signals():
         frame(at), at + timedelta(seconds=31), floor=1000) is None
 
 
+def test_inconsistent_nested_intervals_do_not_emit_or_consume_opportunity():
+    at = utcnow()
+    tracker = Tracker(at - timedelta(seconds=1))
+    assert tracker.accept(frame(at, buys_1h=20, sells_1h=44), at, floor=1000) is None
+    assert tracker.accept(frame(at, buys_1h=80, sells_1h=7), at, floor=1000) is None
+    valid = tracker.accept(frame(at + timedelta(seconds=1)), at + timedelta(seconds=1), floor=1000)
+    assert valid is not None
+    assert valid["decision_evidence"]["prior_55m_trades"] == 64
+    assert Tracker(at - timedelta(seconds=1)).accept(
+        frame(at, buys_1h=24, sells_1h=44), at, floor=1000) is not None
+    assert Tracker(at - timedelta(seconds=1)).accept(
+        frame(at, buys_1h=80, sells_1h=8), at, floor=1000) is not None
+
+
 def test_policy_registers_at_new_frontier_and_next_frame_only(tmp_path, monkeypatch):
     clock = [utcnow()]
     monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
