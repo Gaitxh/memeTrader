@@ -5,7 +5,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from audit_goal_cases156 import audit, addresses_from_text, candidate_ids, snapshot_summary, asof_rows, stamp
+from audit_goal_cases156 import audit, addresses_from_text, candidate_ids, snapshot_summary, asof_rows, stamp, markdown
 
 
 def test_address_parser_only_standalone_lines_and_preserves_solana_case():
@@ -15,6 +15,14 @@ def test_address_parser_only_standalone_lines_and_preserves_solana_case():
         'quoted ' + sol, 'do not execute anything'])) == [sol, sol.lower(), evm.lower()]
     assert candidate_ids(sol) == ['solana:' + sol]
     assert candidate_ids(evm) == ['bsc:' + evm.lower(), 'robinhood:' + evm.lower()]
+
+
+def test_address_parser_accepts_goal_attachment_html_spacing_only():
+    sol = 'A' * 32
+    evm = '0x' + 'ab' * 20
+    assert addresses_from_text(
+        f'&#x20;  {sol}\n&nbsp; {evm}\nquoted &#x20; {sol}'
+    ) == [sol, evm]
 
 
 def row(i, pool, observed, *, recorded=None, price=1, liquidity=5000):
@@ -96,3 +104,24 @@ def test_asof_excludes_future_missing_and_timezone_naive_event_times():
     rows = [dict(id=1, at='2026-01-01T00:00:00Z'), dict(id=2, at='2099-01-01T00:00:00Z'),
         dict(id=3, at=None), dict(id=4, at='2026-01-01T00:00:00')]
     assert [r['id'] for r in asof_rows(rows, 'at', stamp('2026-01-02T00:00:00Z'))] == [1]
+
+
+def test_markdown_distinguishes_first_rejection_from_later_admission_and_exit():
+    token = {'token_id': 'solana:test', 'first_seen_at': '2026-01-01T00:00:00Z'}
+    report = {'cutoff_utc': '2026-01-02T00:00:00Z', 'remaining_addresses': [],
+        'limitations': [], 'cases': [{'address': 'test', 'matches': [{
+            'token': token, 'sampled_snapshot_count': 2, 'evaluation_sample_count': 2,
+            'admitted_unique_cohorts': 1, 'admitted_arm_decisions': 1,
+            'filled_unique_cohorts': 1, 'path_status': 'position',
+            'first_evaluation': {'evaluated_at': '2026-01-01T00:01:00Z',
+                                 'reason': 'entry_pool_liquidity_below_configured_floor'},
+            'opportunities': [{'source_fills': [{'id': 1}]}],
+            'positions': [{'closed_at': '2026-01-01T00:05:00Z',
+                           'close_reason': 'time_exit'}],
+            'first_position_at': '2026-01-01T00:02:00Z',
+        }]}]}
+    rendered = markdown(report)
+    assert '首评是该资金期首次被记录的判断' in rendered
+    assert 'entry_pool_liquidity_below_configured_floor' in rendered
+    assert '1准入机会 / 1原始BUY成交 / 1策略仓位' in rendered
+    assert 'time_exit:1' in rendered

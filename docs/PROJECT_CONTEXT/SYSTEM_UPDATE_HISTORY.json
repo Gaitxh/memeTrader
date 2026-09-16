@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-gold-case-per-token-attribution191",
+      "recorded_at": "2026-09-16T10:10:06Z",
+      "title": "94例金狗逐币首评、成交与退出归因",
+      "problem": "原案例表只有发现/评估/准入/仓位计数，读者仍无法直接区分首次拒绝、后来准入未成交及买入后退出。",
+      "change": "在原只读案例脚本中增加逐币首见、首评原因、准入、原始BUY、仓位及平仓原因视图，并支持从冻结JSON离线重渲染；输出94例归因表，不重查实时市场或引入未来价格。",
+      "rationale": "4个曾准入但无仓的地址均无原始BUY成交，部分有安全等待/到期或拒绝记录；不能把这些路径笼统叫作没有策略信号，更不能将事后热门身份当入场因子。",
+      "validation": "test_goal_cases156.py的7项定向测试通过；冻结94例JSON离线重渲染完成。表中首评是当时的首次记录，安全状态是关联证据，不冒充每个机会的充分因果解释。",
+      "scope": "只读归因与报告，无Paper策略/资金期/Live/API频率改动。",
+      "next": "后续手动复盘按同一机会主键核查安全等待、后续报价和成交，再用191的自然前向结果检验新增入口及快慢退出。",
+      "report": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md"
+    },
+    {
       "id": "20260916-depth191-fast5-matched-exit",
       "recorded_at": "2026-09-16T10:01:23Z",
       "title": "首个可交易深度：同入口5分钟快出对照",

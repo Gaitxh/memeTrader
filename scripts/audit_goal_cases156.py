@@ -10,6 +10,7 @@ import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import hashlib
+import html
 import json
 import math
 from pathlib import Path
@@ -25,7 +26,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def addresses_from_text(text):
     found = []
     for line in text.splitlines():
-        value = line.strip()
+        # Goal attachments encode leading spaces as HTML entities. Decode the
+        # line before applying the standalone-address rule; do not search
+        # arbitrary prose for address-looking substrings.
+        value = html.unescape(line).strip()
         if re.fullmatch(r"0x[0-9a-fA-F]{20,64}", value):
             value = value.lower()
         elif not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", value):
@@ -242,6 +246,50 @@ def markdown(report):
                 f"{item.get('evaluation_sample_count','—')} | {item.get('admitted_unique_cohorts','—')} / "
                 f"{item.get('admitted_arm_decisions','—')} | {item.get('filled_unique_cohorts','—')} / "
                 f"{len(item.get('positions',[]))} | {item['path_status']} |")
+    lines += ['', '## 逐币首阻断与退出证据', '',
+        '首评是该资金期首次被记录的判断，不代表此后始终被同一原因拒绝。'
+        '安全状态是已记录的关联证据，不自动证明每个准入机会的最终失败原因。', '',
+        '| 地址 / 链 | 本地首见 | 首评时间与原因 | 准入后执行或持仓 | 后续可证状态 |',
+        '|---|---|---|---|---|']
+    for case in report['cases']:
+        if not case['matches']:
+            lines.append(f"| `{case['address']}` | — | — | — | 当前库无规范化身份；不能推断历史不可发现 |")
+            continue
+        for item in case['matches']:
+            first = item.get('first_evaluation') or {}
+            first_text = (
+                f"{first.get('evaluated_at', '—')} / `{first.get('reason', '—')}`"
+                if first else '未在抽样帧内评估'
+            )
+            opportunities = item.get('opportunities') or []
+            fills = sum(len(o.get('source_fills') or []) for o in opportunities)
+            positions = item.get('positions') or []
+            execution = (
+                f"{item.get('admitted_unique_cohorts', 0)}准入机会 / "
+                f"{fills}原始BUY成交 / {len(positions)}策略仓位"
+            )
+            if positions:
+                closed = Counter(p.get('close_reason') or '未记录原因'
+                    for p in positions if p.get('closed_at'))
+                open_count = sum(not p.get('closed_at') for p in positions)
+                reasons = ', '.join(f'{reason}:{count}' for reason, count in closed.most_common(3))
+                later = f"首仓{item.get('first_position_at') or '—'}; 已平仓原因 {reasons or '—'}; 未平仓{open_count}"
+            elif item.get('admitted_arm_decisions'):
+                statuses = Counter(str(e.get('safety_status') or 'UNKNOWN')
+                    for e in item.get('safety_evidence') or [])
+                evidence = ', '.join(f'{status}:{count}' for status, count in statuses.most_common(3))
+                later = f"已记安全状态 {evidence or '无'}; 无原始BUY成交" if not fills else '有原始BUY成交，未见策略仓位'
+            else:
+                reasons = Counter(item.get('evaluation_reasons') or {})
+                later = '评估原因 ' + (', '.join(
+                    f'{reason}:{count}' for reason, count in reasons.most_common(3)) or '无')
+            if item.get('query_error') or any(item.get(key) for key in (
+                'snapshot_history_truncated', 'cohort_history_truncated',
+                'position_history_truncated', 'safety_history_truncated',
+            )):
+                later += '; 查询/历史抽样不完整'
+            lines.append(f"| `{item['token']['token_id']}` | {item['token'].get('first_seen_at') or '—'} | "
+                f"{first_text} | {execution} | {later.replace('|', '/')} |")
     lines += ['', '## 边界', '', *('- '+x for x in report['limitations']),
               f"- 未处理地址：{len(report['remaining_addresses'])}；query_error 或 history_truncated 不得解读为完整统计。"]
     return '\n'.join(lines) + '\n'
@@ -249,10 +297,22 @@ def markdown(report):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--addresses-file', required=True, type=Path)
+    parser.add_argument('--addresses-file', type=Path)
+    parser.add_argument('--report-json', type=Path,
+        help='Re-render an existing frozen audit without querying the live database')
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--seconds', type=float, default=30)
     args = parser.parse_args()
+    if args.report_json:
+        report = json.loads(args.report_json.read_text(encoding='utf-8'))
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        target = args.output_dir / (args.report_json.stem + '_attribution.md')
+        target.write_text(markdown(report), encoding='utf-8')
+        print(json.dumps(dict(addresses=report['supplied_address_count'],
+            completed=report['audited_address_count'], output=str(target))))
+        raise SystemExit(0)
+    if args.addresses_file is None:
+        parser.error('--addresses-file is required unless --report-json is given')
     text = args.addresses_file.read_text(encoding='utf-8-sig')
     addresses = addresses_from_text(text)
     config = json.loads((ROOT / 'config.json').read_text(encoding='utf-8-sig'))
