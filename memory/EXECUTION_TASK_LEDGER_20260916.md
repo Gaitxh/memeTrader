@@ -1,5 +1,9 @@
 # Full-chain execution ledger, 2026-09-16
 
+### Stage 217: held quote deadline experiment rejected, 2026-09-17
+
+R03/R11 remain PARTIAL. Rolling baseline held Dex failures13/64 and market-mark p95~8.66s motivated isolated 6.5s and5.0s high-priority batch-deadline trials. Short, nonmatched windows showed failures3/39/p95~11.69s and2/21/p95~11.42s respectively. Because slower exit cycles accompanied lower failures and target/network loads varied, neither is accepted as a system improvement. Reverted source to original3.5s; PID104364 hash-matched, same507 policies/period, Paper running/Live locked, frontier984840. No production code from this attempt is committed; details `docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md`. Need a matched-load resource/queue diagnosis rather than another arbitrary timeout change.
+
 ### Stage 216: first matured forward comparisons and ordinary case control, 2026-09-17
 
 R04/R05/R06/R07/R08/R11 remain PARTIAL/PENDING_FORWARD. At frontier983308, 209 had eight distinct-token terminal positions for -42.3437U net; 214's first same-token later-entry trial tied 209 at -1.1136U each. On one same-entry/same-source-fill washout pair, 212 closed -4.16306U while its hold control later closed -16.0430U; a third existing 149 washout arm also closed -4.1631U. This is one avoided loss, not proof of unique or repeatable alpha. A user-supplied BIKE TYSON case (cohort32910) lost on ordinary $20 Paper arms, while a 141-second-later ordinary PumpSwap control (cohort32941) gained ~42–48U per correlated arm; N=1 and multiple confounders forbid tuning a new gate. Post-deployment market-mark p95 ~10.18s and held Dex p95 ~5.56s require matched-load diagnosis. Evidence: `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.

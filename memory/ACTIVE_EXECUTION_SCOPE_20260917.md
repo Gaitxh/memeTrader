@@ -33,6 +33,8 @@ Stage215 later resolved those six using existing cohort-keyed safety records: tw
 
 Stage216 later closed both pairs: 214/209 same token but different entry fills each -1.1136U; 212/control same entry -4.16306U vs -16.0430U (one favorable avoided-loss pair only). Eight total 209 distinct tokens closed -42.3437U. A user-list BIKE case lost while a near-time ordinary Solana control won substantially, so hindsight hot-list membership cannot be used as a decision feature. See `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.
 
+Stage217 tested 6.5s and5.0s held Dex batch deadlines against the original3.5s and rejected both due slower market-mark tails in nonmatched load windows despite fewer request failures. Source and worker are back at3.5s; no deadline code is committed. See `docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md`.
+
 ## Immediate order
 
 1. **P0 conversion:** use new post-query-fix natural windows to distinguish family-policy absence, exact-pool next-frame failure, safety disposition, source BUY failure and account projection failure. Fix the first *observed* blocking mechanism without weakening the 1000U floor, identity or as-of checks.

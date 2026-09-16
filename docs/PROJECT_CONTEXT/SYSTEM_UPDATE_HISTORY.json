@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-held-quote-deadline-trial217",
+      "recorded_at": "2026-09-16T19:16:00Z",
+      "title": "持仓报价超时上限试验未通过延迟验收，已回退",
+      "problem": "持仓标价循环p95约8.66秒，高优先级Dex请求在原3.5秒上限下64样本失败13次；外部启动和HTTP耗时较长。",
+      "change": "仅试运行6.5秒与5.0秒整批上限，测自然请求失败和退出标价循环；两种试验均回退到原3.5秒。",
+      "rationale": "6.5秒约3/39失败但循环p95约11.69秒；5秒约2/21失败但循环p95约11.42秒。负载不完全匹配且退出尾延迟上升，不能称为实时性优化。",
+      "validation": "原池健康定向测试通过；回退后PID104364加载原3.5秒源码哈希、507臂、同资金期，快照推进至984840；健康接口运行、Paper保留、Live锁定。",
+      "scope": "一次有界可回退运行试验；最终无代码参数变更、无新API/定时任务/账户重置/历史改账。",
+      "status": "候选优化被否定并回退；外部请求等待仍需匹配负载的根因诊断",
+      "next": "手动对照同目标数与同供应商错误窗口，拆分主机启动排队、HTTP和本地处理；优先保证持仓及时退出。",
+      "report": "docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/HELD_QUOTE_DEADLINE_TRIAL217_20260917.md",
+      "runtime_verification": "2026-09-16约19:15Z PID104364，原3.5秒值恢复且源码哈希一致。"
+    },
+    {
       "id": "20260917-forward-pair-case-control216",
       "recorded_at": "2026-09-16T19:06:20Z",
       "title": "首组新策略自然结果成熟，并以普通币对照热门样本",
