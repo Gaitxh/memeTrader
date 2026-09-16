@@ -9052,6 +9052,23 @@ class Runtime:
         self._pattern_chain_cursor = cursor + 1
         cross_section = self.store.capital_cross_section(
             [(k, item["pair_address"]) for k, item in watch.items()])
+        watch_refresh = {}
+        signal_followups = {}
+        for (token_id, _pool), pending in getattr(self, "_cohort_pending", {}).items():
+            if len(signal_followups) >= 8:
+                break
+            eligible_at = [parse_time(signal["recorded_at"])
+                for arm, signal in pending.get("signals", {}).items()
+                if int(pending.get("dispatch_counts", {}).get(arm, 0)) > 0
+                and 0 <= (utcnow() - parse_time(signal["recorded_at"])).total_seconds() <= 60]
+            if not eligible_at:
+                continue
+            signal_followups[token_id] = {
+                "token_id": token_id, "in_watch": token_id in watch,
+                "signal_recorded_at": iso(max(eligible_at)),
+                "due": False, "returned": False, "exact_pool": False,
+                "sampled": False,
+            }
 
         async def fetch_chain(chain: str):
             await self._chain_meme_active_idle().wait()
@@ -9064,6 +9081,8 @@ class Runtime:
                                    if getattr(self,'_mover_watchlist',None) is not None else ()))
                    if v['token'].chain==chain and (v.get('quote') is None
                        or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
+            trace = {"due": len(due), "result": "no_due", "returned": 0}
+            watch_refresh[chain] = trace
             # A frozen cohort signal needs an independently observed next frame.
             # Borrow only vacant address places in an already-due watch batch.
             pending_followups = set()
@@ -9086,7 +9105,23 @@ class Runtime:
                         pending_followups.add(token_id)
                     if len(pending_followups) >= 2 or len(due) >= 30:
                         break
-            if due and self._dex_quote_low_priority_available():
+            trace["due"] = len(due)
+            for token_id, followup in signal_followups.items():
+                if token_id.startswith(chain + ":"):
+                    followup["due"] = token_id.partition(":")[2] in due
+            available = bool(due) and self._dex_quote_low_priority_available()
+            if due and not available:
+                loop = asyncio.get_running_loop()
+                low_slots = getattr(self, "_dex_low_priority_slots", None)
+                trace["result"] = (
+                    "active_work" if not self._chain_meme_active_idle().is_set()
+                    else "runtime_lock" if self._dex_quote_lock.locked()
+                    else "runtime_low_capacity" if low_slots is not None and low_slots.locked()
+                    else "shared_backoff" if loop.time() < self._dex_quote_backoff_until
+                    else "deferred"
+                )
+            if available:
+                timings = {}
                 try:
                     extra = {}
                     manager=getattr(self,'_shared_batch148',None)
@@ -9097,15 +9132,35 @@ class Runtime:
                             excluded=set(watch)|set(priority)|pending_followups)
                     async with dex_low_budget(3):
                         if extra:
-                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False, feature_only148=extra)
+                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
+                                feature_only148=extra, phase_timings=timings)
                         else:
-                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False)
+                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False,
+                                phase_timings=timings)
+                    trace.update(timings)
+                    trace["result"] = "returned" if quoted is not None else "runtime_deferred"
+                    trace["returned"] = len(quoted or {})
+                    for token_id, followup in signal_followups.items():
+                        if not token_id.startswith(chain + ":"):
+                            continue
+                        received = (quoted or {}).get(token_id)
+                        followup["returned"] = received is not None
+                        if received is not None and token_id in watch:
+                            raw = received[1].raw or {}
+                            pairs = raw.get("pairs") or [raw.get("pair", raw)]
+                            followup["exact_pool"] = any(
+                                canonical_token_address(chain, str(pair.get("pairAddress") or ""))
+                                == watch[token_id]["pair_address"] for pair in pairs
+                            )
                     if not self.chain_meme_trader_only:
                         self._remember_pattern_quotes(quoted)
                 except DexLowPriorityCapacityDeferred:
-                    pass  # Keep existing causal watch; retry on the existing tick.
+                    trace["result"] = "client_low_capacity"
                 except (httpx.HTTPError, TimeoutError) as exc:
+                    trace["result"] = type(exc).__name__
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
+                finally:
+                    trace.update(timings)
             return chain, targets
 
         async def observe_chain(chain: str, targets: list) -> None:
@@ -9166,6 +9221,11 @@ class Runtime:
                     if item['probe_frames'] in (2, 3):
                         self.store.rediscovery_funnel_hit(token.token_id, 'temporary_slot_frames_'+str(item['probe_frames']), received)
                 sampled += 1
+                if (token.token_id in signal_followups
+                        and snapshot.ingested_at > parse_time(
+                            signal_followups[token.token_id]["signal_recorded_at"]
+                        )):
+                    signal_followups[token.token_id]["sampled"] = True
                 # Independent candidate work must not monopolize the event loop
                 # while held-market responses and exits are already ready.
                 await asyncio.sleep(0)
@@ -9225,6 +9285,14 @@ class Runtime:
             spare_batch_expansion='DISABLED_PENDING_NATURAL_BUDGET',target_cadence_seconds=15,extra_request_budget=0,
             priority_targets=getattr(self,'_market_target_counts',{}),
             protection_basis='held=OPEN_POSITION only; protected also includes valid pending BUY/SELL, safety and next-frame signals; research uses existing low-priority receipts')
+        coverage["watch_refresh"] = watch_refresh
+        followup_history = getattr(self, "_pattern_signal_followup_trace", {})
+        for token_id, detail in signal_followups.items():
+            followup_history[token_id] = {**detail, "recorded_at": iso(utcnow())}
+        self._pattern_signal_followup_trace = dict(
+            sorted(followup_history.items(), key=lambda row: row[1]["recorded_at"])[-16:]
+        )
+        coverage["signal_followups"] = list(self._pattern_signal_followup_trace.values())
         manager=getattr(self,'_shared_batch148',None)
         if manager:
             manager.prune(utcnow(),set(watch)|set(getattr(self,'_market_priority_tokens',())))

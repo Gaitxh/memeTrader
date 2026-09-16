@@ -117,6 +117,52 @@ def test_frozen_cohort_signal_borrows_existing_watch_batch(
     assert watched.address in calls[0][0]
     assert (pending.address in calls[0][0]) is expected
     assert pending.token_id not in calls[0][1].get('feature_only148',{})
+    status = runtime.store.kv['coverage145:status']
+    assert status['watch_refresh']['bsc']['due'] == (2 if expected else 1)
+    assert status['watch_refresh']['bsc']['result'] == 'returned'
+    if dispatches and age_seconds <= 60:
+        followup = next(item for item in status['signal_followups']
+                        if item['token_id'] == pending.token_id)
+        assert followup['in_watch'] is False
+        assert followup['due'] is expected
+        assert followup['returned'] is False
+
+
+def test_watched_frozen_signal_records_missing_next_frame(monkeypatch):
+    from test_observation_leases145_runtime import LeaseStore,bare_runtime
+
+    clock=[utcnow()]
+    monkeypatch.setattr('memetrader.runtime.utcnow',lambda:clock[0])
+    runtime=bare_runtime(LeaseStore())
+    runtime.chain_meme_trader_only=True
+    token,snapshot=asset(12,clock[0])
+    runtime._remember_pattern_quotes({token.token_id:(token,snapshot)})
+    runtime._cohort_pending={
+        (token.token_id,snapshot.raw['pair']['pairAddress']):{
+            'signals':{'trial':{'recorded_at':iso(clock[0])}},
+            'dispatch_counts':{'trial':1},
+        },
+    }
+    runtime._rank_no_ca_events=lambda:None
+    runtime._dex_quote_low_priority_available=lambda:True
+    idle=asyncio.Event();idle.set();runtime._chain_meme_active_idle=lambda:idle
+
+    async def quote_batch(chain,addresses,**kwargs):
+        return {}
+
+    runtime._dex_batch_quote=quote_batch
+    clock[0]+=timedelta(seconds=16)
+    asyncio.run(runtime.chain_meme_pattern_observer_once())
+
+    status=runtime.store.kv['coverage145:status']
+    followup=status['signal_followups'][0]
+    assert followup['token_id']==token.token_id
+    assert followup['in_watch'] is True
+    assert followup['due'] is True
+    assert followup['returned'] is False
+    assert followup['sampled'] is False
+    assert status['watch_refresh']['bsc']['result']=='returned'
+    assert status['watch_refresh']['bsc']['returned']==0
 
 
 def test_irregular_three_real_frames_use_valid_contract_span():
