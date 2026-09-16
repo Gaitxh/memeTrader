@@ -21027,22 +21027,52 @@ class Store:
                 self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
                 registration["definition_json"],
             )
-            rows = self.db.execute(
-                """
+            # New outcome IDs are monotonic. Scan their tail immediately, and
+            # rotate a bounded older range for late arrivals or missing results.
+            query = """
+                WITH batch AS MATERIALIZED (
+                    SELECT id FROM token_universe_forward_outcomes
+                    WHERE id>? AND id<=? ORDER BY id LIMIT ?
+                )
                 SELECT o.*,c.token_id,c.chain,b.snapshot_id AS baseline_snapshot_id,
                        b.status AS baseline_status
-                FROM token_universe_forward_outcomes o
-                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                FROM batch
+                CROSS JOIN token_universe_forward_outcomes o ON o.id=batch.id
+                CROSS JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
                 LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
                 LEFT JOIN token_universe_fixed_target_execution_results x ON x.outcome_id=o.id
                 WHERE c.id>? AND c.definition_version=? AND x.id IS NULL
-                ORDER BY c.id,o.horizon_minutes,o.id
-                """,
-                (
-                    int(registration["activation_cohort_id"]),
-                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
-                ),
+                ORDER BY o.id LIMIT ?
+            """
+            activation = int(registration["activation_cohort_id"])
+            max_outcome = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_universe_forward_outcomes"
+            ).fetchone()[0])
+            max_result = int(self.db.execute(
+                "SELECT COALESCE(MAX(outcome_id),0) FROM token_universe_fixed_target_execution_results"
+            ).fetchone()[0])
+            tail_cursor = max(max_result, int(getattr(
+                self, "_fixed_target_execution_tail_cursor", 0,
+            )))
+            tail_ids = self.db.execute(
+                "SELECT id FROM token_universe_forward_outcomes "
+                "WHERE id>? ORDER BY id LIMIT 128", (tail_cursor,),
             ).fetchall()
+            tail_end = int(tail_ids[-1][0]) if tail_ids else tail_cursor
+            tail = self.db.execute(query, (
+                tail_cursor, tail_end, 128, activation,
+                self.TOKEN_UNIVERSE_FORWARD_VERSION, 128,
+            )).fetchall() if tail_ids else []
+            cursor = int(getattr(self, "_fixed_target_execution_scan_cursor", 0))
+            if cursor >= max_outcome:
+                cursor = 0
+            sweep_end = min(cursor + 512, max_outcome)
+            sweep = self.db.execute(query, (
+                cursor, sweep_end, 512, activation,
+                self.TOKEN_UNIVERSE_FORWARD_VERSION, 64,
+            )).fetchall() if sweep_end > cursor else []
+            next_cursor = (int(sweep[-1]["id"]) if len(sweep) == 64 else sweep_end)
+            rows = list({int(row["id"]): row for row in (*tail, *sweep)}.values())
             for outcome in rows:
                 payload: dict[str, Any] = {
                     "definition_version": self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
@@ -21206,6 +21236,8 @@ class Store:
                     tuple(payload[column] for column in columns),
                 )
                 inserted += 1
+            self._fixed_target_execution_scan_cursor = next_cursor
+            self._fixed_target_execution_tail_cursor = tail_end
         return {"inserted": inserted, "modeled_executable": modeled_executable}
 
     @classmethod
