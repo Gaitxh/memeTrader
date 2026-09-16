@@ -75,7 +75,9 @@ def test_audit_links_admission_safety_without_inventing_fills_or_positions():
             recorded_at TEXT, definition_version TEXT, shadow_cohort_id INTEGER);
         CREATE TABLE chain_meme_trader_positions (arm_id TEXT, shadow_cohort_id INTEGER, status TEXT,
             opened_at TEXT, closed_at TEXT, close_reason TEXT, entry_snapshot_id INTEGER,
-            source_entry_fill_id INTEGER, source_buy_trade_id INTEGER, definition_version TEXT, token_id TEXT);
+            source_entry_fill_id INTEGER, source_buy_trade_id INTEGER, last_fill_id INTEGER,
+            stake_usd REAL, realized_pnl_usd REAL, realized_proceeds_usd REAL,
+            allocated_cost_usd REAL, definition_version TEXT, token_id TEXT);
         CREATE TABLE chain_meme_pattern_evidence (id INTEGER, pair_address TEXT, kind TEXT,
             recorded_at TEXT, payload_json TEXT, definition_version TEXT, token_id TEXT);
     ''')
@@ -97,6 +99,12 @@ def test_audit_links_admission_safety_without_inventing_fills_or_positions():
     assert opportunity['safety_evidence_ids'] == [99]
     assert item['admitted_unique_cohorts'] == 1
     assert item['positions'] == []
+    rendered = markdown({'cutoff_utc': '2026-01-02T00:00:00Z',
+        'remaining_addresses': [], 'limitations': [],
+        'cases': [{'address': address, 'matches': [item]}]})
+    assert '准入但未成交的逐机会记录' in rendered
+    assert '无终局回执' in rendered
+    assert '无原始BUY成交' in rendered
     con.close()
 
 
@@ -115,8 +123,13 @@ def test_markdown_distinguishes_first_rejection_from_later_admission_and_exit():
             'filled_unique_cohorts': 1, 'path_status': 'position',
             'first_evaluation': {'evaluated_at': '2026-01-01T00:01:00Z',
                                  'reason': 'entry_pool_liquidity_below_configured_floor'},
-            'opportunities': [{'source_fills': [{'id': 1}]}],
-            'positions': [{'closed_at': '2026-01-01T00:05:00Z',
+            'opportunities': [{'cohort': {'id': 7, 'pair_address': 'pool-a'},
+                               'source_fills': [{'id': 1}]}],
+            'positions': [{'arm_id': 'arm-a', 'shadow_cohort_id': 7,
+                           'source_entry_fill_id': 1, 'stake_usd': 20.0,
+                           'realized_pnl_usd': -2.0, 'last_fill_id': 9,
+                           'status': 'closed', 'opened_at': '2026-01-01T00:02:00Z',
+                           'closed_at': '2026-01-01T00:05:00Z',
                            'close_reason': 'time_exit'}],
             'first_position_at': '2026-01-01T00:02:00Z',
         }]}]}
@@ -125,3 +138,4 @@ def test_markdown_distinguishes_first_rejection_from_later_admission_and_exit():
     assert 'entry_pool_liquidity_below_configured_floor' in rendered
     assert '1准入机会 / 1原始BUY成交 / 1策略仓位' in rendered
     assert 'time_exit:1' in rendered
+    assert '20.0 / -2.0 / 9' in rendered

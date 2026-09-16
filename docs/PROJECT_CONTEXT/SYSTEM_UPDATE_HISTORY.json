@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-full-sample-cohort-position-audit",
+      "recorded_at": "2026-09-16T11:09:28Z",
+      "title": "完整样本的逐机会未成交与逐仓退出复核",
+      "problem": "早前样本归因把机会和仓位压缩成逐币汇总，难以解释准入后未买以及同币多策略仓的退出差异。",
+      "change": "扩展现有只读索引审计，逐cohort列出原池、准入、源BUY、安全状态及终局回执，逐策略仓列出源BUY、投入、已实现损益和退出原因；125行原始样本保持顺序及重复，另用94个唯一地址作研究索引。",
+      "rationale": "逐机会、源BUY、策略仓和独立Token须分开统计；关联安全状态不是唯一充分因果，事后热门样本的盈利汇总不能证明可前瞻识别。",
+      "validation": "7项定向测试通过；94/94地址完成索引审计，70个当前期身份匹配，查询无错误或截断。40个准入但无源BUY的cohort中37个关联到EXPIRED_SECURITY_OR_NEXT_FRAME、2个关联REJECT；765个已关闭投影仓来自22个独立Token和219个源BUY ID，合计已实现PnL约+461.38U，不能当作独立策略收益证据。191两臂仍无自然仓位。",
+      "scope": "只读研究脚本、报告和任务台账；不回写交易、不改运行策略、资金期、API或Live。",
+      "next": "用同时期普通/失败币构造有界对照；继续逐机会因果归因和同入口退出比较，等待191自然前向样本。",
+      "report": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md"
+    },
+    {
       "id": "20260916-fullchain-baseline-depth191-provider-fix",
       "recorded_at": "2026-09-16T11:01:46Z",
       "title": "交易减少实测与同池跨数据源假深度修正",

@@ -182,7 +182,9 @@ def audit(connection, addresses, version, *, row_limit=3000, seconds=30):
                 item['admitted_unique_cohorts'] = sum(any(x['status'] == 'admitted'
                     for x in o['arm_decisions']) for o in opportunities)
                 positions = rows('SELECT arm_id,shadow_cohort_id,status,opened_at,closed_at,close_reason,'
-                    'entry_snapshot_id,source_entry_fill_id,source_buy_trade_id FROM '
+                    'entry_snapshot_id,source_entry_fill_id,source_buy_trade_id,last_fill_id,'
+                    'stake_usd,realized_pnl_usd,realized_proceeds_usd,allocated_cost_usd '
+                    'FROM '
                     'chain_meme_trader_positions WHERE definition_version=? AND token_id=? '
                     'ORDER BY arm_id,shadow_cohort_id LIMIT ?', (version, token_id, row_limit+1))
                 item['position_history_truncated'] = len(positions) > row_limit
@@ -290,6 +292,54 @@ def markdown(report):
                 later += '; 查询/历史抽样不完整'
             lines.append(f"| `{item['token']['token_id']}` | {item['token'].get('first_seen_at') or '—'} | "
                 f"{first_text} | {execution} | {later.replace('|', '/')} |")
+    lines += ['', '## 准入但未成交的逐机会记录', '',
+        '安全记录仅按同一cohort关联；没有源BUY时不能把策略准入当作成交。', '',
+        '| Token / cohort | 决策时点与原池 | 准入臂 | 关联安全状态 | 参与者终局 |',
+        '|---|---|---:|---|---|']
+    missing_fill_rows = 0
+    for case in report['cases']:
+        for item in case['matches']:
+            for opportunity in item.get('opportunities') or []:
+                admitted = sum(x.get('status') == 'admitted'
+                    for x in opportunity.get('arm_decisions') or [])
+                if not admitted or opportunity.get('source_fills'):
+                    continue
+                cohort = opportunity['cohort']
+                linked = [e for e in item.get('safety_evidence') or []
+                          if e.get('cohort_id') == cohort['id']]
+                safety = ', '.join(f'{name}:{count}' for name, count in
+                    Counter(str(e.get('safety_status') or 'UNKNOWN') for e in linked).most_common(4))
+                outcomes = ', '.join(f'{name}:{count}' for name, count in
+                    Counter(str(o.get('outcome') or 'UNKNOWN') for o in
+                            opportunity.get('participant_outcomes') or []).most_common(4))
+                lines.append(f"| `{item['token']['token_id']}` / {cohort['id']} | "
+                    f"{cohort.get('decided_at') or '—'} / `{cohort.get('pair_address') or '—'}` | "
+                    f"{admitted} | {safety or '无关联记录'} | {outcomes or '无终局回执'} |")
+                missing_fill_rows += 1
+    if not missing_fill_rows:
+        lines.append('| — | — | — | 当前抽样内无此类机会 | — |')
+    lines += ['', '## 已买入策略仓的逐仓结果', '',
+        '已实现PnL只表示账本已实现部分；开放仓不在此处按后来行情估值。'
+        '重复策略仓不等于独立源BUY或独立Token。', '',
+        '| Token / 策略 / cohort | 原池 / 源BUY | 开仓 / 平仓 | 状态与退出原因 | 投入U / 已实现PnL U / 末次fill |',
+        '|---|---|---|---|---|']
+    position_rows = 0
+    for case in report['cases']:
+        for item in case['matches']:
+            pools = {o['cohort']['id']: o['cohort'].get('pair_address')
+                     for o in item.get('opportunities') or []}
+            for position in item.get('positions') or []:
+                cohort_id = position['shadow_cohort_id']
+                lines.append(f"| `{item['token']['token_id']}` / `{position['arm_id']}` / {cohort_id} | "
+                    f"`{pools.get(cohort_id) or 'UNKNOWN'}` / {position.get('source_entry_fill_id') or '—'} | "
+                    f"{position.get('opened_at') or '—'} / {position.get('closed_at') or '—'} | "
+                    f"{position.get('status') or '—'}; {position.get('close_reason') or '—'} | "
+                    f"{position.get('stake_usd') if position.get('stake_usd') is not None else '—'} / "
+                    f"{position.get('realized_pnl_usd') if position.get('realized_pnl_usd') is not None else '—'} / "
+                    f"{position.get('last_fill_id') or '—'} |")
+                position_rows += 1
+    if not position_rows:
+        lines.append('| — | — | — | 当前抽样内无仓位 | — |')
     lines += ['', '## 边界', '', *('- '+x for x in report['limitations']),
               f"- 未处理地址：{len(report['remaining_addresses'])}；query_error 或 history_truncated 不得解读为完整统计。"]
     return '\n'.join(lines) + '\n'
