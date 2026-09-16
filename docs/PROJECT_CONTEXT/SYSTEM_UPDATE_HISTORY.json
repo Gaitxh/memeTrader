@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-washout-paired-control213",
+      "recorded_at": "2026-09-16T18:46:00Z",
+      "title": "洗出回收退出试验补齐同期模拟对照账户",
+      "problem": "212已有一笔自然开仓，但母策略账户此前亏损耗尽并暂停，不能用母策略旧期结果冒充同期配对对照。",
+      "change": "追加独立Paper臂alpha212_washout_reclaim_hold_control_v1，复用同一冻结入场信号和原120分钟退出合同，仅与212新前沿以后的共同机会配对。",
+      "rationale": "保留母策略亏损与暂停事实，不充值、不退款、不回填先前212仓位；同源对照才可判断新增结构退出的边际价值。",
+      "validation": "212/对照定向4项与相邻6项测试通过；对照18:45:11Z激活，PID100836加载源码哈希，506臂、原资金期Paper运行、Live锁定；即时对照自然仓位0，212首笔仍开放。稍后212首笔以+12.6213U净额平仓（未配对）；209七个独立币仓位全平，总净额-41.2301U。",
+      "scope": "一个有明确配对假设的新增模拟账户；无新行情API、定时任务、实盘权限、资金重置或历史改账。",
+      "status": "工程已部署；首笔212自然盈利但不配对、不能证明预期收益；209七笔已结清且净亏；后续同源配对待观察",
+      "next": "手动按同Token/同池/同源信号与成交核对两臂的净收益、洗出与尾部损失；单边未成交单列原因。",
+      "report": "docs/PROJECT_CONTEXT/WASHOUT_PAIRED_CONTROL213_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/WASHOUT_PAIRED_CONTROL213_20260917.md",
+      "runtime_verification": "2026-09-16约18:45Z，manifest PID100836且三文件哈希匹配。"
+    },
+    {
       "id": "20260917-washout-anchor212",
       "recorded_at": "2026-09-16T18:38:00Z",
       "title": "洗出回收策略新增原池结构失守确认退出，并记录迁移早入场自然亏损",

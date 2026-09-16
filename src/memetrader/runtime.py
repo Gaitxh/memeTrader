@@ -9053,13 +9053,14 @@ class Runtime:
                         offered149 += 1
                 if offered149 and hasattr(self, 'runtime_timing'):
                     self.runtime_timing.observe('alpha149_coverage_offers', 0.0, items=offered149)
-            from .washout_reclaim212 import ARM as RECLAIM212_ARM, PARENT as RECLAIM212_PARENT, alias_signal
+            from .washout_reclaim212 import ARM as RECLAIM212_ARM, CONTROL as RECLAIM212_CONTROL, PARENT as RECLAIM212_PARENT, alias_signal
             for arm_signals in signals.values():
                 parent_signal = arm_signals.get(RECLAIM212_PARENT)
                 if parent_signal:
                     alias = alias_signal(parent_signal)
                     if alias is not None:
                         arm_signals[RECLAIM212_ARM] = alias
+                        arm_signals[RECLAIM212_CONTROL] = alias_signal(parent_signal, RECLAIM212_CONTROL)
             for identity, arm_signals in signals.items():
                 if identity not in quotes:
                     continue

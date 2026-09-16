@@ -6,7 +6,7 @@ from memetrader.cohort_experiments import cohort_experiment_policies
 from memetrader.models import TokenCandidate, iso, utcnow
 from memetrader.store import Store
 from memetrader.washout_reclaim212 import (
-    ARM, PARENT, advance, alias_signal, frozen_anchor, policy,
+    ARM, CONTROL, PARENT, advance, alias_signal, control_policy, frozen_anchor, policy,
 )
 from test_l0_store import _snapshot
 from test_core import _seed_chain_market_position
@@ -33,6 +33,8 @@ def test_alias_freezes_pre_reclaim_observation_without_future_data():
     alias = alias_signal(source_signal(at))
     assert alias["decision_evidence"]["reclaim_anchor212"]["price_usd"] == .009
     assert frozen_anchor(alias, at + timedelta(seconds=1)) is not None
+    control = alias_signal(source_signal(at), CONTROL)
+    assert control["decision_key"] != alias["decision_key"]
     assert frozen_anchor(alias, at - timedelta(seconds=1)) is None
     assert alias_signal({**source_signal(at), "decision_evidence": {"feature_vector": {
         "prev": {"price_usd": .009, "observed_at": iso(at + timedelta(seconds=1))},
@@ -74,11 +76,14 @@ def test_append_and_forward_position_freezes_anchor(tmp_path, monkeypatch):
         parent = next(p for p in alpha149_policies(cohort_experiment_policies()[2])
                       if p["arm_id"] == PARENT)
         store.append_chain_meme_trader_policy(parent)
-        assert store.register_chain_meme_washout_reclaim212() == 1
+        assert store.register_chain_meme_washout_reclaim212() == 2
         assert store.register_chain_meme_washout_reclaim212() == 0
         trial = policy(parent)
+        control = control_policy(parent)
         assert trial["hard_stop_return"] == parent["hard_stop_return"]
         assert trial["max_hold_minutes"] == parent["max_hold_minutes"] == 120
+        assert not control.get("reclaim_anchor_exit212")
+        assert control["hard_stop_return"] == parent["hard_stop_return"]
         token = TokenCandidate("solana", TOKEN.split(":", 1)[1], "Wash", "W")
         store.upsert_token(token, seen_at=clock[0])
         clock[0] += timedelta(seconds=1)
@@ -90,13 +95,15 @@ def test_append_and_forward_position_freezes_anchor(tmp_path, monkeypatch):
         monkeypatch.setattr(store, "_trajectory_engine_for", lambda policy: engine)
         store.observe_chain_meme_pattern(
             token, _snapshot(token, POOL, clock[0], liquidity=5000),
-            recorded_at=clock[0], cohort_signals={ARM: signal},
+            recorded_at=clock[0], cohort_signals={ARM: signal,
+                CONTROL: alias_signal(source_signal(clock[0]), CONTROL)},
         )
         clock[0] += timedelta(seconds=7)
         features["observed_at"] = iso(clock[0])
         store.observe_chain_meme_pattern(
             token, _snapshot(token, POOL, clock[0], liquidity=5000),
-            recorded_at=clock[0], cohort_signals={ARM: signal},
+            recorded_at=clock[0], cohort_signals={ARM: signal,
+                CONTROL: alias_signal(source_signal(clock[0] - timedelta(seconds=7)), CONTROL)},
         )
         position = store.db.execute(
             "SELECT * FROM chain_meme_trader_positions WHERE arm_id=?", (ARM,),
@@ -109,6 +116,11 @@ def test_append_and_forward_position_freezes_anchor(tmp_path, monkeypatch):
         assert position["opened_at"] > signal["observed_at"]
         assert store._json_object(position["capital_exit_state_json"])[
             "reclaim_anchor212_frozen"]["price_usd"] == .009
+        control_position = store.db.execute(
+            "SELECT * FROM chain_meme_trader_positions WHERE arm_id=?", (CONTROL,),
+        ).fetchone()
+        assert control_position is not None
+        assert control_position["source_entry_fill_id"] == position["source_entry_fill_id"]
     finally:
         store.close()
 

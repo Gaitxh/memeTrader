@@ -9,6 +9,7 @@ from .models import iso, parse_time
 
 VERSION = "washout-reclaim212/v1"
 ARM = "alpha212_washout_reclaim_anchor_v1"
+CONTROL = "alpha212_washout_reclaim_hold_control_v1"
 PARENT = "alpha149_washout_reclaim_hold_v1"
 _OWNED_FIELDS = {
     "account_lifecycle", "assessment_evidence", "assessment_note",
@@ -44,7 +45,31 @@ def policy(parent: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def alias_signal(source: Mapping[str, Any]) -> dict[str, Any] | None:
+def control_policy(parent: Mapping[str, Any]) -> dict[str, Any]:
+    result = {key: deepcopy(value) for key, value in parent.items()
+              if key not in _OWNED_FIELDS}
+    result.update(
+        arm_id=CONTROL, canonical_id=CONTROL, entry_family=CONTROL,
+        name="Washout reclaim, original hold control",
+        entry_alias_of=PARENT, source_arm_ids=[PARENT],
+        paired_opportunity_group="washout212_same_source",
+        excess_return_vs_arm=ARM,
+        assessment_status="INSUFFICIENT", decision_eligible=True,
+        observer_only=False, affects="paper_only", live=False,
+        no_historical_backfill=True,
+        description=(
+            f"{VERSION}: new-frontier account using the same frozen {PARENT} "
+            "entry and its unchanged 120-minute exit contract. The old parent "
+            "account is depleted and paused; this control permits a contemporary "
+            "comparison with 212 without altering or refunding that account."
+        ),
+    )
+    result["entry_filter"] = {**(result.get("entry_filter") or {}), "direction": CONTROL}
+    result.pop("signal_origin_clock", None)
+    return result
+
+
+def alias_signal(source: Mapping[str, Any], arm: str = ARM) -> dict[str, Any] | None:
     if not source.get("decision_key"):
         return None
     signal = deepcopy(dict(source))
@@ -58,7 +83,7 @@ def alias_signal(source: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     if not (0 < anchor < float("inf") and prior_at < signal_at):
         return None
-    signal["decision_key"] = f"{source['decision_key']}|{ARM}"
+    signal["decision_key"] = f"{source['decision_key']}|{arm}"
     evidence["reclaim_anchor212"] = {"price_usd": anchor,
                                      "observed_at": iso(prior_at),
                                      "signal_observed_at": iso(signal_at)}

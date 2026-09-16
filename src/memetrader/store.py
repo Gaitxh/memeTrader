@@ -27427,7 +27427,7 @@ class Store:
 
     def register_chain_meme_washout_reclaim212(self) -> int:
         """Append one frozen-entry reclaim failure exit experiment."""
-        from .washout_reclaim212 import ARM, PARENT, policy
+        from .washout_reclaim212 import ARM, CONTROL, PARENT, control_policy, policy
 
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         with self._lock, self.db:
@@ -27438,10 +27438,16 @@ class Store:
                 version, registration["definition_json"],
             )
             by_arm = {item.get("arm_id"): item for item in definition["policies"]}
-            if PARENT not in by_arm or ARM in by_arm:
+            if PARENT not in by_arm:
                 return 0
-            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
-            return 1
+            added = 0
+            if ARM not in by_arm:
+                self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+                added += 1
+            if CONTROL not in by_arm:
+                self.append_chain_meme_trader_policy(control_policy(by_arm[PARENT]), activated_at=utcnow())
+                added += 1
+            return added
 
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
