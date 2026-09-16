@@ -53,6 +53,61 @@ def stamp(value):
         return None
 
 
+def reported_event_stamp(value):
+    """Provider pairCreatedAt may be Unix milliseconds; it is not a local receipt."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = value / 1000 if value > 1e11 else value
+        return seconds if math.isfinite(seconds) and seconds > 0 else None
+    return stamp(value)
+
+
+def creation_discovery_timeline(token, exposures, launches, snapshots, cutoff):
+    valid_exposures = [row for row in exposures
+        if (observed := stamp(row.get('observed_at'))) is not None
+        and (recorded := stamp(row.get('recorded_at'))) is not None
+        and observed <= recorded <= cutoff]
+    valid_exposures.sort(key=lambda row: (stamp(row['recorded_at']), row['id']))
+    valid_launches = [row for row in launches
+        if (source := stamp(row.get('source_observed_at'))) is not None
+        and (ingested := stamp(row.get('ingested_at'))) is not None
+        and (recorded := stamp(row.get('recorded_at'))) is not None
+        and source <= ingested <= recorded <= cutoff]
+    valid_launches.sort(key=lambda row: (stamp(row['recorded_at']), row['id']))
+    pair_evidence = []
+    for row in snapshots:
+        observed = stamp(row.get('observed_at'))
+        recorded = stamp(row.get('recorded_at'))
+        created = reported_event_stamp(row.get('pair_created_at'))
+        if (not row.get('pair_address') or observed is None or recorded is None
+                or created is None or not created <= observed <= recorded <= cutoff):
+            continue
+        pair_evidence.append({
+            'pair_address': row['pair_address'],
+            'reported_pair_created_at': datetime.fromtimestamp(created, timezone.utc).isoformat(),
+            'first_locally_observed_at': row['observed_at'],
+            'first_locally_recorded_at': row['recorded_at'],
+            'provider': row.get('provider'),
+        })
+    pair_evidence.sort(key=lambda row: (stamp(row['first_locally_recorded_at']),
+                                            row['pair_address']))
+    first_local = next((row for row in valid_exposures
+                        if row.get('first_local_discovery')), None)
+    token_created = token.get('created_at')
+    return {
+        'database_token_created_at': token_created if stamp(token_created) is not None
+            and stamp(token_created) <= cutoff else None,
+        'valid_exposure_count': len(valid_exposures),
+        'invalid_or_future_exposure_count': len(exposures) - len(valid_exposures),
+        'first_exposure': valid_exposures[0] if valid_exposures else None,
+        'first_local_discovery_exposure': first_local,
+        'valid_launch_fact_count': len(valid_launches),
+        'invalid_or_future_launch_fact_count': len(launches) - len(valid_launches),
+        'first_launch_fact': valid_launches[0] if valid_launches else None,
+        'first_reported_pair_creation': pair_evidence[0] if pair_evidence else None,
+        'creation_clock_status': 'stored_launch_fact' if valid_launches else 'launch_source_clock_unknown',
+    }
+
+
 def quantiles(values):
     values = sorted(values)
     return {name: values[round((len(values)-1)*p)] if values else None
@@ -68,6 +123,7 @@ def snapshot_summary(rows, cutoff):
     pools = defaultdict(dict)
     invalid = Counter()
     processing = []
+    first_valid = None
     for row in rows:
         observed, recorded = stamp(row['observed_at']), stamp(row['recorded_at'])
         pair = row['pair_address']
@@ -92,6 +148,11 @@ def snapshot_summary(rows, cutoff):
         # Same-time replays are one observation, not evidence of fresh sampling.
         pools[pair].setdefault(observed, row['id'])
         processing.append(recorded - observed)
+        if first_valid is None or (recorded, row['id']) < (
+                stamp(first_valid['recorded_at']), first_valid['snapshot_id']):
+            first_valid = dict(snapshot_id=row['id'], pair_address=pair,
+                provider=row.get('provider'), observed_at=row['observed_at'],
+                recorded_at=row['recorded_at'])
     result = []
     for pair, observations in pools.items():
         times = sorted(observations)
@@ -100,7 +161,8 @@ def snapshot_summary(rows, cutoff):
             first_observed_at=datetime.fromtimestamp(times[0], timezone.utc).isoformat(),
             last_observed_at=datetime.fromtimestamp(times[-1], timezone.utc).isoformat(),
             adjacent_gaps_seconds=quantiles(gaps), max_gap_seconds=max(gaps, default=None)))
-    return dict(pools=result, invalid_rows=dict(invalid),
+    return dict(pools=result, first_valid_recorded_pool_snapshot=first_valid,
+                invalid_rows=dict(invalid),
                 observed_to_recorded_seconds=quantiles(processing))
 
 
@@ -116,7 +178,7 @@ def audit(connection, addresses, version, *, row_limit=3000, seconds=30):
     for address in addresses:
         matches = []
         for token_id in candidate_ids(address):
-            matches += rows('SELECT token_id,chain,address,name,symbol,source,first_seen_at,last_seen_at '
+            matches += rows('SELECT token_id,chain,address,name,symbol,source,created_at,first_seen_at,last_seen_at '
                             'FROM tokens WHERE token_id=?', (token_id,))
         result = dict(address=address, original_15=address in ADDRESSES, matches=[],
             address_validation=('invalid_evm_length' if address.startswith('0x') and len(address) != 42
@@ -136,13 +198,41 @@ def audit(connection, addresses, version, *, row_limit=3000, seconds=30):
                 # All large histories use token/source/cohort index prefixes.
                 snapshots = rows("SELECT id,observed_at,recorded_at,provider,price_usd,liquidity_usd,"
                     "COALESCE(json_extract(raw_json,'$.pair.pairAddress'),"
-                    "json_extract(raw_json,'$.pairAddress')) pair_address FROM token_snapshots "
+                    "json_extract(raw_json,'$.pairAddress')) pair_address,"
+                    "COALESCE(json_extract(raw_json,'$.pair.pairCreatedAt'),"
+                    "json_extract(raw_json,'$.pairCreatedAt')) pair_created_at FROM token_snapshots "
                     "WHERE token_id=? ORDER BY observed_at,id LIMIT ?", (token_id, row_limit+1))
                 item['snapshot_history_truncated'] = len(snapshots) > row_limit
                 snapshots = snapshots[:row_limit]
                 item['sampled_snapshot_count'] = len(snapshots)
                 item['sampled_snapshot_time_range'] = [snapshots[0]['observed_at'], snapshots[-1]['observed_at']] if snapshots else []
                 item['market_observations'] = snapshot_summary(snapshots, cutoff.timestamp())
+                exposures = rows('SELECT e.id,e.round_id,e.role,e.first_local_discovery,'
+                    'e.no_pair,e.observed_at,e.recorded_at,r.provider,r.surface,r.mode,'
+                    'r.status round_status,r.started_at round_started_at,'
+                    'r.completed_at round_completed_at FROM token_discovery_exposures e '
+                    'JOIN token_discovery_rounds r ON r.id=e.round_id '
+                    'WHERE e.token_id=? ORDER BY e.observed_at,e.id LIMIT ?',
+                    (token_id, row_limit+1))
+                item['discovery_history_truncated'] = len(exposures) > row_limit
+                launches = rows('SELECT id,launch_provider,launch_surface,launch_event_type,'
+                    'source_observed_at,ingested_at,recorded_at FROM token_launch_facts '
+                    'WHERE token_id=? ORDER BY source_observed_at,id LIMIT ?',
+                    (token_id, row_limit+1))
+                item['launch_history_truncated'] = len(launches) > row_limit
+                item['creation_discovery'] = creation_discovery_timeline(
+                    token, exposures[:row_limit], launches[:row_limit], snapshots,
+                    cutoff.timestamp())
+                first_exposure = item['creation_discovery']['first_exposure']
+                first_quote = item['market_observations']['first_valid_recorded_pool_snapshot']
+                exposure_time = stamp(first_exposure['recorded_at']) if first_exposure else None
+                quote_time = stamp(first_quote['recorded_at']) if first_quote else None
+                item['discovery_to_valid_pool_quote_seconds'] = (
+                    quote_time - exposure_time if exposure_time is not None
+                    and quote_time is not None and quote_time >= exposure_time else None)
+                item['valid_pool_quote_preceded_discovery_exposure'] = bool(
+                    exposure_time is not None and quote_time is not None
+                    and quote_time < exposure_time)
                 evaluations = []
                 for start in range(0, len(snapshots), 400):
                     ids = [x['id'] for x in snapshots[start:start+400]]
@@ -232,6 +322,9 @@ def audit(connection, addresses, version, *, row_limit=3000, seconds=30):
             'Cohorts are unique opportunity IDs, not statistically independent token samples.',
             'Invalid EVM lengths are retained with a warning, not silently discarded or repaired.',
             'Observation gaps use distinct same-pool times; cache freshness beyond stored fields unknown.',
+            'Discovery exposure is one persisted source path, not proof of first-ever visibility; earlier market snapshots may precede it.',
+            'Provider pair-created and launch-source event clocks become locally available only at their recorded/ingested times.',
+            'A delayed first valid pool snapshot can reflect no tradable pool or delayed acquisition; this audit alone does not distinguish them.',
             'Evaluation coverage is bounded to sampled snapshot IDs; route tags are not risk rejections.'])
 
 
@@ -248,6 +341,37 @@ def markdown(report):
                 f"{item.get('evaluation_sample_count','—')} | {item.get('admitted_unique_cohorts','—')} / "
                 f"{item.get('admitted_arm_decisions','—')} | {item.get('filled_unique_cohorts','—')} / "
                 f"{len(item.get('positions',[]))} | {item['path_status']} |")
+    lines += ['', '## 创建与发现时点证据', '',
+        '池创建及launch事件时间是供应商报告时间；只有对应本地观察/记录之后才可用，不能回填到事件时刻。'
+        ' 首个本地发现标记缺失表示记录不完整或左截断，不等于系统当时绝对没有发现。', '',
+        '| Token | 首次发现暴露 (观察 / 入库 / 来源) | 首个本地发现标记 | 最早已见池的报告创建 / 当时入库 | 首次有效候选池报价入库 / 发现后秒数 | launch来源事件 / 入库 |',
+        '|---|---|---|---|---|---|']
+    for case in report['cases']:
+        if not case['matches']:
+            lines.append(f"| `{case['address']}` | 当前库无规范化身份 | — | — | — | — |")
+        for item in case['matches']:
+            timeline = item.get('creation_discovery') or {}
+            exposure = timeline.get('first_exposure') or {}
+            first_local = timeline.get('first_local_discovery_exposure') or {}
+            pair = timeline.get('first_reported_pair_creation') or {}
+            launch = timeline.get('first_launch_fact') or {}
+            first_text = (f"{exposure.get('observed_at')} / {exposure.get('recorded_at')} / "
+                f"{exposure.get('provider')}:{exposure.get('surface')}"
+                if exposure else '未知')
+            local_text = (f"{first_local.get('observed_at')} / {first_local.get('recorded_at')}"
+                if first_local else '未知')
+            pair_text = (f"{pair.get('reported_pair_created_at')} / "
+                f"{pair.get('first_locally_recorded_at')}" if pair else '未知')
+            quote = (item.get('market_observations') or {}).get('first_valid_recorded_pool_snapshot') or {}
+            quote_delay = item.get('discovery_to_valid_pool_quote_seconds')
+            quote_text = (f"{quote.get('recorded_at')} / "
+                f"{round(quote_delay, 3) if quote_delay is not None else '不可计算'}"
+                if quote else '未知')
+            launch_text = (f"{launch.get('source_observed_at')} / {launch.get('recorded_at')}"
+                if launch else '未知')
+            suffix = ' (历史截断)' if item.get('discovery_history_truncated') or item.get('launch_history_truncated') else ''
+            lines.append(f"| `{item['token']['token_id']}` | {first_text} | {local_text} | "
+                f"{pair_text} | {quote_text} | {launch_text}{suffix} |")
     lines += ['', '## 逐币首阻断与退出证据', '',
         '首评是该资金期首次被记录的判断，不代表此后始终被同一原因拒绝。'
         '安全状态是已记录的关联证据，不自动证明每个准入机会的最终失败原因。', '',
