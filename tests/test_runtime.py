@@ -1228,7 +1228,7 @@ def test_solana_holder_shadow_records_aggregate_forward_snapshot_only(tmp_path, 
     asyncio.run(scenario())
 
 
-def test_dex_quote_transport_backoff_is_shared_across_waiting_lanes(tmp_path):
+def test_dex_quote_transport_backoff_is_shared_across_lanes(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -1247,13 +1247,9 @@ def test_dex_quote_transport_backoff_is_shared_across_waiting_lanes(tmp_path):
         runtime.dex.batch_quote = batch_quote
         runtime._dex_quote_backoff_base_seconds = 0.02
         runtime._dex_quote_backoff_cap_seconds = 0.02
-        results = await asyncio.gather(
-            runtime._dex_batch_quote("solana", ["A"]),
-            runtime._dex_batch_quote("bsc", ["B"]),
-            return_exceptions=True,
-        )
-        assert isinstance(results[0], httpx.ConnectError)
-        assert results[1] == {}
+        with pytest.raises(httpx.ConnectError):
+            await runtime._dex_batch_quote("solana", ["A"])
+        assert await runtime._dex_batch_quote("bsc", ["B"]) == {}
         assert call_times[1] - call_times[0] >= 0.019
         assert runtime._dex_quote_failure_streak == 0
         assert runtime._dex_quote_backoff_until == 0

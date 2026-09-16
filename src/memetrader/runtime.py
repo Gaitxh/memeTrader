@@ -1668,6 +1668,8 @@ class Runtime:
         self._stop = asyncio.Event()
         self._dex_quote_failure_streak = 0
         self._dex_quote_backoff_until = 0.0
+        self._dex_quote_transport_backoff_until = 0.0
+        self._dex_quote_rate_limit_until = 0.0
         self._dex_quote_backoff_base_seconds = 2.0
         self._dex_quote_backoff_cap_seconds = 30.0
         if self.config["safety"].get("require_pretrade_rug_safety_v1", False):
@@ -1690,7 +1692,12 @@ class Runtime:
         self.store.close()
 
     def _note_dex_rate_limit(self, deadline: float) -> None:
-        self._dex_quote_backoff_until = max(self._dex_quote_backoff_until, deadline)
+        self._dex_quote_rate_limit_until = max(
+            getattr(self, "_dex_quote_rate_limit_until", 0.0), deadline,
+        )
+        self._dex_quote_backoff_until = max(
+            self._dex_quote_backoff_until, self._dex_quote_rate_limit_until,
+        )
 
     def _dex_quote_low_priority_available(self) -> bool:
         loop = asyncio.get_running_loop()
@@ -1855,9 +1862,7 @@ class Runtime:
                     delay = CoinGeckoDemoPoolClient._retry_after_seconds(
                         exc.response.headers.get("Retry-After"), utcnow(),
                     )
-                    self._dex_quote_backoff_until = max(
-                        self._dex_quote_backoff_until, loop.time() + delay,
-                    )
+                    self._note_dex_rate_limit(loop.time() + delay)
                 if selected_alpha149 and manager_alpha149 is not None:
                     manager_alpha149.release(selected_alpha149, utcnow(), reason='failed_request')
                 raise
@@ -1872,8 +1877,13 @@ class Runtime:
                     f"dexscreener:{type(exc).__name__}:{self._dex_quote_failure_streak}".encode()
                 ).digest()
                 delay = base * (1.0 + int.from_bytes(digest[:2], "big") / 65535.0 * 0.2)
+                self._dex_quote_transport_backoff_until = max(
+                    getattr(self, "_dex_quote_transport_backoff_until", 0.0),
+                    loop.time() + delay,
+                )
                 self._dex_quote_backoff_until = max(
-                    self._dex_quote_backoff_until, loop.time() + delay,
+                    self._dex_quote_backoff_until,
+                    self._dex_quote_transport_backoff_until,
                 )
                 if selected_alpha149 and manager_alpha149 is not None:
                     manager_alpha149.release(selected_alpha149, utcnow(), reason='failed_request')
@@ -1885,10 +1895,13 @@ class Runtime:
                     phase_timings["transport_with_client_wait_seconds"] = (
                         loop.time() - request_started
                     )
-            # A peer request may have started cooling down while this one was in flight.
-            if self._dex_quote_backoff_until <= loop.time():
-                self._dex_quote_failure_streak = 0
-                self._dex_quote_backoff_until = 0.0
+            # A completed peer proves transport recovered; do not erase a real
+            # provider 429 Retry-After that arrived while it was in flight.
+            self._dex_quote_failure_streak = 0
+            self._dex_quote_transport_backoff_until = 0.0
+            rate_deadline = getattr(self, "_dex_quote_rate_limit_until", 0.0)
+            self._dex_quote_rate_limit_until = rate_deadline if rate_deadline > loop.time() else 0.0
+            self._dex_quote_backoff_until = self._dex_quote_rate_limit_until
             if post_selected151:
                 try:
                     post151.response(self.store, quoted, post_selected151, utcnow(), DexScreenerClient._snapshot)
