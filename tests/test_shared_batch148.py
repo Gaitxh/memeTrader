@@ -75,6 +75,50 @@ def test_unrouted_cohort_pending_is_not_a_price_feed_takeover(monkeypatch,has_qu
         assert extra.token_id in manager.active
 
 
+@pytest.mark.parametrize('dispatches,age_seconds,quote_owner,expected', [
+    (1, 16, False, True),
+    (0, 16, False, False),
+    (1, 61, False, False),
+    (1, 16, True, False),
+])
+def test_frozen_cohort_signal_borrows_existing_watch_batch(
+    monkeypatch, dispatches, age_seconds, quote_owner, expected,
+):
+    from test_observation_leases145_runtime import LeaseStore,bare_runtime
+
+    clock=[utcnow()]
+    monkeypatch.setattr('memetrader.runtime.utcnow',lambda:clock[0])
+    runtime=bare_runtime(LeaseStore())
+    runtime.chain_meme_trader_only=True
+    watched,watched_snapshot=asset(10,clock[0])
+    pending,pending_snapshot=asset(11,clock[0])
+    runtime._remember_pattern_quotes({watched.token_id:(watched,watched_snapshot)})
+    runtime._cohort_pending={
+        (pending.token_id,pending_snapshot.raw['pair']['pairAddress']):{
+            'signals':{'trial':{'recorded_at':iso(clock[0]-timedelta(seconds=age_seconds-16))}},
+            'dispatch_counts':{'trial':dispatches},
+        },
+    }
+    runtime._market_priority_tokens={pending.token_id} if quote_owner else set()
+    runtime._rank_no_ca_events=lambda:None
+    runtime._dex_quote_low_priority_available=lambda:True
+    idle=asyncio.Event();idle.set();runtime._chain_meme_active_idle=lambda:idle
+    calls=[]
+
+    async def quote_batch(chain,addresses,**kwargs):
+        calls.append((list(addresses),kwargs))
+        return {}
+
+    runtime._dex_batch_quote=quote_batch
+    clock[0]+=timedelta(seconds=16)
+    asyncio.run(runtime.chain_meme_pattern_observer_once())
+
+    assert len(calls)==1
+    assert watched.address in calls[0][0]
+    assert (pending.address in calls[0][0]) is expected
+    assert pending.token_id not in calls[0][1].get('feature_only148',{})
+
+
 def test_irregular_three_real_frames_use_valid_contract_span():
     from memetrader.trajectory144 import _window
     start=utcnow()

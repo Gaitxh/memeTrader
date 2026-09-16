@@ -9064,14 +9064,37 @@ class Runtime:
                                    if getattr(self,'_mover_watchlist',None) is not None else ()))
                    if v['token'].chain==chain and (v.get('quote') is None
                        or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
+            # A frozen cohort signal needs an independently observed next frame.
+            # Borrow only vacant address places in an already-due watch batch.
+            pending_followups = set()
+            if due and len(due) < 30:
+                current = utcnow()
+                for (token_id, _pool), item in getattr(self, '_cohort_pending', {}).items():
+                    if token_id in watch or token_id in priority or item.get('quote') is not None:
+                        continue
+                    token_chain, _, address = token_id.partition(':')
+                    if token_chain != chain or not canonical_token_address(chain, address):
+                        continue
+                    if not any(
+                        int(item.get('dispatch_counts', {}).get(arm, 0)) > 0
+                        and 0 <= (current - parse_time(signal['recorded_at'])).total_seconds() <= 60
+                        for arm, signal in item.get('signals', {}).items()
+                    ):
+                        continue
+                    if address not in due:
+                        due.append(address)
+                        pending_followups.add(token_id)
+                    if len(pending_followups) >= 2 or len(due) >= 30:
+                        break
             if due and self._dex_quote_low_priority_available():
                 try:
                     extra = {}
                     manager=getattr(self,'_shared_batch148',None)
                     if manager and getattr(self,'chain_meme_trader_only',False):
-                        # A cohort waiting for evaluation is not yet a quote owner.
-                        # Only a real ordinary/priority feed can replace this lease.
-                        due,extra=manager.extend_batch(chain,due,utcnow(),excluded=set(watch)|set(priority))
+                        # Unrouted cohorts remain feature-only; dispatched frozen
+                        # signals above borrow ordinary slots in this due batch.
+                        due,extra=manager.extend_batch(chain,due,utcnow(),
+                            excluded=set(watch)|set(priority)|pending_followups)
                     async with dex_low_budget(3):
                         if extra:
                             quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False, feature_only148=extra)
