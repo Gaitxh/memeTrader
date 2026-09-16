@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from memetrader.depth_cross191 import ARM, PARENT, Tracker, policy
+from memetrader.depth_cross191 import ARM, ARMS, FAST_ARM, PARENT, Tracker, policy
 from memetrader.alpha149 import policies as alpha149_policies
 from memetrader.cohort_experiments import cohort_experiment_policies
 from memetrader.models import iso, utcnow
@@ -81,14 +81,19 @@ def test_policy_is_small_forward_only_and_registers_once(tmp_path):
         assert trial["entry_filter"]["single_token_lifetime_entry"]
         assert not trial["requires_distinct_wide_frame"]
         assert trial["hard_stop_return"] == parent["hard_stop_return"]
+        fast = policy(parent, FAST_ARM)
+        assert fast["max_hold_minutes"] == 5
+        assert trial["max_hold_minutes"] == 30
+        assert fast["hard_stop_return"] == trial["hard_stop_return"]
         frontier = store.db.execute("SELECT COALESCE(MAX(id),0) FROM token_snapshots").fetchone()[0]
-        assert store.register_chain_meme_depth_cross191() == 1
+        assert store.register_chain_meme_depth_cross191() == 2
         assert store.register_chain_meme_depth_cross191() == 0
-        row = store.db.execute(
-            "SELECT activation_snapshot_id FROM chain_meme_trader_policy_additions "
-            "WHERE definition_version=? AND arm_id=?", (version, ARM),
-        ).fetchone()
-        assert row["activation_snapshot_id"] == frontier
+        for arm in ARMS:
+            row = store.db.execute(
+                "SELECT activation_snapshot_id FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?", (version, arm),
+            ).fetchone()
+            assert row["activation_snapshot_id"] == frontier
     finally:
         store.close()
 
@@ -103,7 +108,7 @@ def test_signal_reaches_cohort_and_only_next_observed_quote_buys(tmp_path, monke
         parent_seed = next(p for p in alpha149_policies(cohort_experiment_policies()[2])
                            if p["arm_id"] == PARENT)
         store.append_chain_meme_trader_policy(parent_seed)
-        assert store.register_chain_meme_depth_cross191() == 1
+        assert store.register_chain_meme_depth_cross191() == 2
         token = TokenCandidate("solana", TOKEN.split(":", 1)[1], "Depth", "DEP")
         store.upsert_token(token, seen_at=clock[0])
         tracker = Tracker(clock[0])
@@ -112,9 +117,11 @@ def test_signal_reaches_cohort_and_only_next_observed_quote_buys(tmp_path, monke
         clock[0] += timedelta(seconds=20)
         signal = tracker.accept(frame(clock[0], 3000), clock[0], floor=1000)
         assert signal is not None
+        signals = {arm: {**signal, "decision_key": signal["decision_key"] + ":" + arm}
+                   for arm in ARMS}
         assert store.observe_chain_meme_pattern(
             token, _snapshot(token, POOL, clock[0], liquidity=3000),
-            recorded_at=clock[0], cohort_signals={ARM: signal},
+            recorded_at=clock[0], cohort_signals=signals,
         ) == 0
         assert store.db.execute(
             "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE arm_id=?", (ARM,)
@@ -122,13 +129,19 @@ def test_signal_reaches_cohort_and_only_next_observed_quote_buys(tmp_path, monke
         clock[0] += timedelta(seconds=7)
         assert store.observe_chain_meme_pattern(
             token, _snapshot(token, POOL, clock[0], liquidity=3000),
-            recorded_at=clock[0], cohort_signals={ARM: signal},
-        ) == 1
-        position = store.db.execute(
-            "SELECT * FROM chain_meme_trader_positions WHERE arm_id=?", (ARM,)
-        ).fetchone()
-        assert position["stake_usd"] == 20
-        assert position["opened_at"] > signal["observed_at"]
+            recorded_at=clock[0], cohort_signals=signals,
+        ) == 2
+        positions = store.db.execute(
+            "SELECT * FROM chain_meme_trader_positions WHERE arm_id IN (?,?) ORDER BY arm_id",
+            ARMS,
+        ).fetchall()
+        assert len(positions) == 2
+        assert {row["arm_id"] for row in positions} == set(ARMS)
+        assert {row["source_entry_fill_id"] for row in positions} == {
+            positions[0]["source_entry_fill_id"]
+        }
+        assert all(row["stake_usd"] == 20 and row["opened_at"] > signal["observed_at"]
+                   for row in positions)
     finally:
         store.close()
 

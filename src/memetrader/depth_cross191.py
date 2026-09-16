@@ -11,6 +11,8 @@ from .models import canonical_token_address, iso, parse_time
 
 VERSION = "depth-cross191/v1"
 ARM = "depth191_first_tradable_v1"
+FAST_ARM = "depth191_first_tradable_fast5_v1"
+ARMS = (ARM, FAST_ARM)
 PARENT = "alpha149_wide_decorr_young_v1"
 MAX_POOLS = 256
 MAX_CROSS_SECONDS = 300
@@ -24,12 +26,15 @@ _OWNED_FIELDS = {
 }
 
 
-def policy(parent: Mapping[str, Any]) -> dict[str, Any]:
+def policy(parent: Mapping[str, Any], arm: str = ARM) -> dict[str, Any]:
+    if arm not in ARMS:
+        raise ValueError("unknown depth-cross arm")
     result = {key: deepcopy(value) for key, value in parent.items()
               if key not in _OWNED_FIELDS}
     result.update(
-        arm_id=ARM, canonical_id=ARM, entry_family=ARM,
-        name="First tradable original-pool depth",
+        arm_id=arm, canonical_id=arm, entry_family=arm,
+        name=("First tradable depth, fast 5m" if arm == FAST_ARM
+              else "First tradable depth, 30m"),
         feature_contract=VERSION,
         feature_hypothesis="first_tradable_depth",
         entry_match_mode="isolated_cohort_observer",
@@ -37,6 +42,9 @@ def policy(parent: Mapping[str, Any]) -> dict[str, Any]:
         requires_distinct_trajectory_frame=False,
         requires_distinct_wide_frame=False,
         notional_usd=20.0,
+        max_hold_minutes=5 if arm == FAST_ARM else 30,
+        paired_opportunity_group="depth191_same_entry",
+        paired_opportunity_semantics="same_frozen_signal_where_shared",
         assessment_status="INSUFFICIENT", decision_eligible=True,
         observer_only=False, affects="paper_only", live=False,
         no_historical_backfill=True,
@@ -45,17 +53,17 @@ def policy(parent: Mapping[str, Any]) -> dict[str, Any]:
             "300s by the first >=2x-floor frame, pool age <=600s, positive price "
             "and buy share >=50% with at least one sell. The independent tracker "
             "requires distinct causal frames; ordinary safety and next-frame Paper "
-            "execution remain mandatory. Existing shared data, no extra request."
+            f"execution remain mandatory. Max hold {5 if arm == FAST_ARM else 30}m; "
+            "existing shared data, no extra request."
         ),
     )
     result["entry_filter"] = {
         **(result.get("entry_filter") or {}),
-        "direction": ARM,
+        "direction": arm,
         "max_concurrent_positions": 8,
         "single_token_lifetime_entry": True,
     }
     result.pop("entry_alias_of", None)
-    result.pop("paired_opportunity_group", None)
     result.pop("excess_return_vs_arm", None)
     result.pop("signal_origin_clock", None)
     return result

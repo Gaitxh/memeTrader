@@ -8900,8 +8900,11 @@ class Runtime:
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
                 if identity in depth_cross_signals:
-                    from .depth_cross191 import ARM as DEPTH_CROSS_ARM
-                    signals.setdefault(identity, {})[DEPTH_CROSS_ARM] = depth_cross_signals[identity]
+                    from .depth_cross191 import ARMS as DEPTH_CROSS_ARMS
+                    for arm in DEPTH_CROSS_ARMS:
+                        cross = dict(depth_cross_signals[identity])
+                        cross["decision_key"] = f"{cross['decision_key']}:{arm}"
+                        signals.setdefault(identity, {})[arm] = cross
                 if identity[0] in extra148:
                     signals.setdefault(identity,{}).update(extra148_signals.get(identity,{}))
                     # ALPHA149: spare-capacity frames exist to give the new arms

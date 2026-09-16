@@ -27201,8 +27201,8 @@ class Store:
             return 1
 
     def register_chain_meme_depth_cross191(self) -> int:
-        """Append one first-tradable-depth Paper arm at the current frontier."""
-        from .depth_cross191 import ARM, PARENT, policy
+        """Append same-entry fast/slow first-tradable-depth Paper arms."""
+        from .depth_cross191 import ARMS, PARENT, policy
 
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         with self._lock, self.db:
@@ -27214,11 +27214,16 @@ class Store:
             )
             parent = next((item for item in definition["policies"]
                            if item.get("arm_id") == PARENT), None)
-            if parent is None or any(item.get("arm_id") == ARM
-                                     for item in definition["policies"]):
+            if parent is None:
                 return 0
-            self.append_chain_meme_trader_policy(policy(parent), activated_at=utcnow())
-            return 1
+            existing = {item.get("arm_id") for item in definition["policies"]}
+            added = 0
+            for arm in ARMS:
+                if arm not in existing:
+                    self.append_chain_meme_trader_policy(
+                        policy(parent, arm), activated_at=utcnow())
+                    added += 1
+            return added
 
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""

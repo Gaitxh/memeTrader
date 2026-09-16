@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-depth191-fast5-matched-exit",
+      "recorded_at": "2026-09-16T10:01:23Z",
+      "title": "首个可交易深度：同入口5分钟快出对照",
+      "problem": "新depth191早入场臂虽能测试薄池转可交易深度，但单独30分钟退出无法区分快出和慢出在同类机会上的实际成本后效果。",
+      "change": "追加独立Paper臂depth191_first_tradable_fast5_v1，与30分钟臂使用同一冻结信号、同一后续报价、安全门和20U名义金额；只将最长持仓改为5分钟，不增加HTTP或历史回填。",
+      "rationale": "用户要求研究多种快慢买卖节奏；同源BUY配对可隔离退出期限，避免比较不同机会时把行情差异当策略差异。新臂在独立前沿加入，不回写旧臂。",
+      "validation": "5项191定向测试通过，包括下一独立报价形成两个同源Paper仓位；10:01:23Z新臂激活于快照915648，原臂仍为914128，后续快照915722、health running、Paper only、Live locked，短窗仍无自然fast5仓位。",
+      "scope": "一个新增Paper对照账户和既有共享信号的扇出；不改现有仓位、资金期、API、原池底线或安全过滤。",
+      "next": "只在共同源BUY且两臂都具完整观察窗口后比较5与30分钟净收益、洗出、核销和最大赢家依赖；自然样本未形成之前不宣称盈利。",
+      "report": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md"
+    },
+    {
       "id": "20260916-gold-case-reaudit-depth191",
       "recorded_at": "2026-09-16T09:40:00Z",
       "title": "金狗样例逐项重审与首个可交易原池深度Paper实验",
