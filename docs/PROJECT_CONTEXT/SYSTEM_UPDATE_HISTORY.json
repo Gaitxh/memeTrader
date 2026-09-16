@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-first-frame-funnel-and-paired-exit-risk",
+      "recorded_at": "2026-09-16T11:35:16Z",
+      "title": "233个新币的首帧转化与144同入场快慢退出风险复核",
+      "problem": "Dex无池状态容易被误读成所有来源无池；快出与趋势持有若只比较总盈利会漏掉后者更大的核销尾部。",
+      "change": "对固定11:15–11:25 UTC首次本地发现cohort复算采集状态与首帧耗时，并按同一入场cohort比较144快出与趋势臂48小时及当前期终局；保留两臂继续自然前向观察。",
+      "rationale": "233个首次发现Token均有采集尝试、126个后来有任意行情帧，但Dex no_pair可同时存在Gecko有效池价；144趋势臂平均收益较高却有更多全损，因此不能只按均值退役快出。",
+      "validation": "新币233、任意首帧126、已取得首帧者中位8.06秒；144最近48小时108个同cohort独立Token，快出-95.51U、趋势+167.79U；当前期198对为-125.58U与+532.64U，但趋势原池核销24次、快出14次。两窗口嵌套，不是独立重复实验。",
+      "scope": "只读研究及任务台账，无历史改写、策略参数/生命周期变更、API新增或实盘操作。",
+      "next": "继续区分任意首帧与可买原池报价；等待187/190和191自然结果，按同入口净收益与全损尾部联合决策。",
+      "report": "docs/PROJECT_CONTEXT/RECENT_DISCOVERY_AND_TRAJECTORY_PAIR192_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/RECENT_DISCOVERY_AND_TRAJECTORY_PAIR192_20260916.md"
+    },
+    {
       "id": "20260916-active-dex-poll-health-display",
       "recorded_at": "2026-09-16T11:28:45Z",
       "title": "修正发现源健康页：显示运行中的 Dex 轮询而非旧推送流",
