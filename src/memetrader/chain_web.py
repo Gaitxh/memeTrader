@@ -531,7 +531,10 @@ class ChainWebData:
     def update_history(self) -> dict[str, Any]:
         path = self.root / "docs" / "PROJECT_CONTEXT" / "SYSTEM_UPDATE_HISTORY.json"
         entries = json.loads(path.read_text(encoding="utf-8")).get("entries", []) if path.exists() else []
-        return {"status": "ok", "generated_at": iso(), "entries": entries[-100:][::-1]}
+        newest = sorted(enumerate(entries), key=lambda item: (
+            str(item[1].get("recorded_at") or ""), item[0],
+        ), reverse=True)[:100]
+        return {"status": "ok", "generated_at": iso(), "entries": [entry for _, entry in newest]}
 
     @staticmethod
     def _sample_curve(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
