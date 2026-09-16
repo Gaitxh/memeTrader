@@ -909,6 +909,13 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_launch_facts_token_idx
                     ON token_launch_facts(token_id,source_observed_at,id);
+                CREATE INDEX IF NOT EXISTS token_launch_facts_creator_asof_idx
+                    ON token_launch_facts(
+                        definition_version,launch_event_type,creator_address,
+                        id,recorded_at,source_observed_at
+                    );
+                CREATE INDEX IF NOT EXISTS token_launch_facts_definition_recorded_idx
+                    ON token_launch_facts(definition_version,recorded_at);
                 CREATE TRIGGER IF NOT EXISTS token_launch_facts_no_update
                 BEFORE UPDATE ON token_launch_facts
                 BEGIN SELECT RAISE(ABORT,'token launch facts are immutable'); END;
