@@ -27425,6 +27425,24 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_washout_reclaim212(self) -> int:
+        """Append one frozen-entry reclaim failure exit experiment."""
+        from .washout_reclaim212 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162
@@ -29854,6 +29872,17 @@ class Store:
             "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
             "AND token_id=? AND status='open' AND shadow_cohort_id<>? LIMIT 1",
             (version, str(d['arm_id']), token_id, cohort_id)).fetchone()]
+        reclaim_anchor212 = None
+        if any(str(d['arm_id']) == 'alpha212_washout_reclaim_anchor_v1' for d in decisions):
+            from .washout_reclaim212 import ARM as RECLAIM212_ARM, frozen_anchor
+            cohort = self.db.execute(
+                'SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',
+                (cohort_id,),
+            ).fetchone()
+            signals = self._json_object(cohort['feature_json']).get('cohort_signals', {}) if cohort else {}
+            reclaim_anchor212 = frozen_anchor(signals.get(RECLAIM212_ARM) or {}, filled_at)
+            if reclaim_anchor212 is None:
+                decisions = [d for d in decisions if str(d['arm_id']) != RECLAIM212_ARM]
         from .cohort_enrollment import open_or_reserved_full
         pending_limits={p['arm_id']:int(p['entry_filter']['max_concurrent_positions'])
             for p in definition['policies'] if p.get('trajectory_engine')=='v144'}
@@ -30063,6 +30092,13 @@ class Store:
             )
             if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
                 continue
+            if arm_id == 'alpha212_washout_reclaim_anchor_v1' and reclaim_anchor212 is not None:
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                    (self._json({'reclaim_anchor212_frozen': reclaim_anchor212}),
+                     version, arm_id, int(cohort_id)),
+                )
             self.db.execute(
                 "INSERT INTO chain_meme_trader_trades("
                 "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
@@ -36779,6 +36815,30 @@ class Store:
                                 )
                                 action = f"TAKE_PROFIT_{tp_index + 1}"
                                 reason = f"market_mark_take_profit_{tp_index + 1}"
+                        if action is None and policy.get('reclaim_anchor_exit212'):
+                            from .washout_reclaim212 import advance
+                            outer212 = self._json_object(position['capital_exit_state_json'])
+                            frozen212 = outer212.get('reclaim_anchor212_frozen') or {}
+                            anchor212 = float(frozen212.get('price_usd') or 0.0)
+                            next212, failed212 = advance(
+                                outer212, anchor=anchor212, price=mark_price,
+                                sequence=int(position['sample_sequence'] or 0),
+                                observed_at=mark_observed_at,
+                                opened_at=position['opened_at'],
+                                pair_address=str(position['mark_pair_address'] or ''),
+                            )
+                            if next212 != outer212:
+                                self.db.execute(
+                                    'UPDATE chain_meme_trader_positions SET capital_exit_state_json=? '
+                                    'WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?',
+                                    (self._json(next212), version, arm_id, position['shadow_cohort_id']),
+                                )
+                            if failed212:
+                                action, reason = 'RECLAIM_FAILURE_EXIT', 'confirmed_pre_reclaim_anchor_loss212'
+                                trigger_evidence['reclaim_anchor212'] = {
+                                    'frozen': frozen212, 'confirmed_mark_sequence': int(position['sample_sequence']),
+                                    'confirmed_mark_observed_at': iso(mark_observed_at),
+                                }
                 if policy.get("capital_exit_kind") and action != "RUG_EXIT":
                     capital = self._capital_exit_result(position, policy, current, capital_shared)
                     if capital and capital[0] in {"SELL", "SELL_PARTIAL"}:
@@ -36873,7 +36933,7 @@ class Store:
                 # Defect guard (round 3): a dust-liquidity outlier print must not be
                 # allowed to set the price of a price-driven exit. Liquidity exits and
                 # write-offs are deliberately excluded - a dying pool must still be left.
-                if (str(action) in ("HARD_STOP", "TRAILING_EXIT")
+                if (str(action) in ("HARD_STOP", "TRAILING_EXIT", "RECLAIM_FAILURE_EXIT")
                         or str(action).startswith("TAKE_PROFIT_")) and not self._mark_is_plausible(
                         position, mark_price, position["mark_liquidity_usd"]):
                     continue

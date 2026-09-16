@@ -1462,6 +1462,7 @@ class Runtime:
                     self.store.register_chain_meme_activity_tempo_fast200()
                     self.store.register_chain_meme_migration_first209()
                     self.store.register_chain_meme_activity_confirm211()
+                    self.store.register_chain_meme_washout_reclaim212()
                     from .migration_first209 import Tracker as MigrationFirstTracker
                     self._migration_first209 = MigrationFirstTracker(utcnow())
                     from .activity_confirm211 import Tracker as ActivityConfirmTracker
@@ -9052,6 +9053,13 @@ class Runtime:
                         offered149 += 1
                 if offered149 and hasattr(self, 'runtime_timing'):
                     self.runtime_timing.observe('alpha149_coverage_offers', 0.0, items=offered149)
+            from .washout_reclaim212 import ARM as RECLAIM212_ARM, PARENT as RECLAIM212_PARENT, alias_signal
+            for arm_signals in signals.values():
+                parent_signal = arm_signals.get(RECLAIM212_PARENT)
+                if parent_signal:
+                    alias = alias_signal(parent_signal)
+                    if alias is not None:
+                        arm_signals[RECLAIM212_ARM] = alias
             for identity, arm_signals in signals.items():
                 if identity not in quotes:
                     continue
@@ -10455,7 +10463,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_confirm211.py','migration_first209.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_confirm211.py','migration_first209.py','washout_reclaim212.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',
