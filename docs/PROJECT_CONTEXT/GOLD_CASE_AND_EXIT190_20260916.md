@@ -30,6 +30,8 @@ Seventy-three targeted tests passed across shared risk, DEX proxy, trajectory144
 
 At 2026-09-16 09:10:31Z the restarted Paper runtime activated the new arm at snapshot 911276. Its first observed position used entry snapshot 911424, strictly after that frontier; the latest account readback showed 980U cash after its ordinary 20U buy and zero realized PNL. `/health` returned `running` with the unchanged `funding-20260906-v002-final-1000` period. Live trading remained disabled; no new funding period or historical position reset was made. This is a deployment/readback result, not a profitability result.
 
+The first position subsequently closed at 09:12:45Z: BSC token `0xb03467d7854e6742c8c33277f6f4c1e9fd69518d`, source BUY 8863, a market-mark hard stop with realized -6.1031U. The parent runner and armed-trail control on that same source BUY also closed via the same hard stop for -6.1031U each. New-arm cash became 993.8969U. This is one paired no-difference loss, not evidence that the new trailing rule helps or harms.
+
 The round-189 exact original-pool quote correction was also naturally exercised: after the upstream 429 cleared, the same WIF pool produced a fresh `VISIBLE` Gecko mark at about 09:00:25Z (price 0.1770463154 USD, liquidity 5127.07 USD). This proves one successful current-pool refresh, not continuous quote availability; when its 15-second evidence expires the Paper path still waits rather than borrowing a different pool.
 
 ## Manual forward review
