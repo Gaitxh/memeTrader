@@ -193,7 +193,8 @@ class Engine:
         from .trend_moonbag169 import alias_signals
         from .trajectory_regime187 import alias_signals as alias_regime187
         from .trajectory_exit190 import alias_signals as alias_exit190
-        return alias_exit190(alias_regime187(alias_signals(out)))
+        from .trajectory_stop198 import alias_signals as alias_stop198
+        return alias_stop198(alias_exit190(alias_regime187(alias_signals(out))))
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}

@@ -82,8 +82,12 @@ def _number(value: Any) -> float | None:
 class Tracker:
     """Bounded, restart-local memory; a restart cannot invent an earlier low frame."""
 
-    def __init__(self, started_at: Any):
+    def __init__(self, started_at: Any, *, crossing_multiplier: float = 2.0,
+                 arm: str = ARM, version: str = VERSION):
         self.started_at = parse_time(started_at)
+        self.crossing_multiplier = crossing_multiplier
+        self.arm = arm
+        self.version = version
         self.pools: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
 
     def accept(self, frame: Mapping[str, Any], now: Any, *, floor: float) -> dict[str, Any] | None:
@@ -138,12 +142,13 @@ class Tracker:
             return None
         if state is None:
             return None
-        crossing_depth = max(2000.0, 2 * threshold)
+        crossing_depth = self.crossing_multiplier * threshold
+        if self.arm == ARM:
+            crossing_depth = max(2000.0, crossing_depth)
         if liquidity < crossing_depth:
             state["last_at"] = observed
             self.pools.move_to_end(identity)
             return None
-        self.pools.pop(identity)
         elapsed = (observed - state["low_at"]).total_seconds()
         buys = _number(frame.get("buys_5m"))
         sells = _number(frame.get("sells_5m"))
@@ -151,9 +156,12 @@ class Tracker:
                 and liquidity >= crossing_depth
                 and buys is not None and sells is not None
                 and buys >= 2 and sells >= 1 and buys >= sells):
+            state["last_at"] = observed
+            self.pools.move_to_end(identity)
             return None
+        self.pools.pop(identity)
         evidence = {
-            "version": VERSION, "mode": ARM,
+            "version": self.version, "mode": self.arm,
             "low_observed_at": iso(state["low_at"]),
             "low_liquidity_usd": state["low_liquidity_usd"],
             "cross_observed_at": iso(observed),
@@ -167,8 +175,8 @@ class Tracker:
             "chain": chain, "token_id": token_id, "pair_address": pool,
         }
         return {
-            "episode_id": f"{VERSION}:{token_id}:{pool}",
-            "decision_key": f"{VERSION}:{token_id}:{pool}:{iso(observed)}",
+            "episode_id": f"{self.version}:{token_id}:{pool}",
+            "decision_key": f"{self.version}:{token_id}:{pool}:{iso(observed)}",
             "selected": {"token_id": token_id, "pair_address": pool},
             "observed_at": iso(observed), "recorded_at": iso(recorded),
             "decision_evidence": evidence,

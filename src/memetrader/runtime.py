@@ -1455,8 +1455,11 @@ class Runtime:
                     self.store.register_chain_meme_core_portfolio183()
                     self.store.register_chain_meme_trajectory_regime187()
                     self.store.register_chain_meme_trajectory_exit190()
+                    self.store.register_chain_meme_trajectory_stop198()
                     self.store.register_chain_meme_depth_cross191()
+                    self.store.register_chain_meme_depth_floor199()
                     self.store.register_chain_meme_activity_tempo193()
+                    self.store.register_chain_meme_activity_tempo_fast200()
                     self.store.register_chain_meme_tempo_matrix162()
                     self.store.register_chain_meme_goldendog_recovery164()
                     self.store.register_chain_meme_loss_retirements()
@@ -8556,6 +8559,10 @@ class Runtime:
             from .depth_cross191 import Tracker as DepthCrossTracker
             self.store._depth_cross191 = DepthCrossTracker(utcnow())
         depth_cross191 = self.store._depth_cross191
+        if not hasattr(self.store, '_depth_floor199'):
+            from .depth_floor199 import Tracker as DepthFloorTracker
+            self.store._depth_floor199 = DepthFloorTracker(utcnow())
+        depth_floor199 = self.store._depth_floor199
         if not hasattr(self.store, '_activity_tempo193'):
             from .activity_tempo193 import Tracker as ActivityTempoTracker
             self.store._activity_tempo193 = ActivityTempoTracker(utcnow())
@@ -8856,6 +8863,7 @@ class Runtime:
             now = utcnow()
             fresh_trajectory = set(); fresh144=set(); fresh149=set(); extra148_signals={}; delayed148=[]
             depth_cross_signals = {}
+            depth_floor_signals = {}
             activity_tempo_signals = {}
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
@@ -8868,6 +8876,10 @@ class Runtime:
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if cross_signal is not None:
                     depth_cross_signals[identity] = cross_signal
+                floor_signal = depth_floor199.accept(frame, now, floor=getattr(
+                    self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                if floor_signal is not None:
+                    depth_floor_signals[identity] = floor_signal
                 tempo_signal = activity_tempo193.accept(frame, now, floor=getattr(
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if tempo_signal is not None:
@@ -8925,12 +8937,17 @@ class Runtime:
             for identity in quotes:
                 if identity in activity_tempo_signals:
                     signals.setdefault(identity, {})[ACTIVITY_TEMPO_ARM] = activity_tempo_signals[identity]
+                    from .activity_tempo_fast200 import ARM as ACTIVITY_FAST_ARM, alias_signal
+                    signals[identity][ACTIVITY_FAST_ARM] = alias_signal(activity_tempo_signals[identity])
                 if identity in depth_cross_signals:
                     from .depth_cross191 import ARMS as DEPTH_CROSS_ARMS
                     for arm in DEPTH_CROSS_ARMS:
                         cross = dict(depth_cross_signals[identity])
                         cross["decision_key"] = f"{cross['decision_key']}:{arm}"
                         signals.setdefault(identity, {})[arm] = cross
+                if identity in depth_floor_signals:
+                    from .depth_floor199 import ARM as DEPTH_FLOOR_ARM
+                    signals.setdefault(identity, {})[DEPTH_FLOOR_ARM] = depth_floor_signals[identity]
                 if identity[0] in extra148:
                     signals.setdefault(identity,{}).update(extra148_signals.get(identity,{}))
                     # ALPHA149: spare-capacity frames exist to give the new arms
@@ -10385,7 +10402,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','activity_tempo193.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','trajectory_stop198.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

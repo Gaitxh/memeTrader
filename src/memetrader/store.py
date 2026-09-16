@@ -27271,6 +27271,24 @@ class Store:
             self.append_chain_meme_trader_policy(policy(parent), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_trajectory_stop198(self) -> int:
+        """Append a Solana runner with distinct fresh-mark stop confirmation."""
+        from .trajectory_stop198 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_depth_cross191(self) -> int:
         """Append same-entry fast/slow first-tradable-depth Paper arms."""
         from .depth_cross191 import ARMS, PARENT, policy
@@ -27296,6 +27314,24 @@ class Store:
                     added += 1
             return added
 
+    def register_chain_meme_depth_floor199(self) -> int:
+        """Append one earlier crossing of the unchanged executable pool floor."""
+        from .depth_floor199 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_activity_tempo193(self) -> int:
         """Append one old-pool activity acceleration Paper arm."""
         from .activity_tempo193 import ARM, PARENT, policy
@@ -27314,6 +27350,24 @@ class Store:
                                      for item in definition["policies"]):
                 return 0
             self.append_chain_meme_trader_policy(policy(parent), activated_at=utcnow())
+            return 1
+
+    def register_chain_meme_activity_tempo_fast200(self) -> int:
+        """Append the same-entry short-hold contrast for old-pool tempo."""
+        from .activity_tempo_fast200 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
     def register_chain_meme_tempo_matrix162(self) -> int:
@@ -36124,6 +36178,49 @@ class Store:
                 return False
         return True
 
+    def _fresh_stop_confirmation_allows(
+        self, policy: Mapping[str, Any], position: Mapping[str, Any],
+        economic_return: float | None, mark_observed_at: Any,
+    ) -> bool:
+        """Count independent, locally available pool marks, never loop evaluations."""
+        if policy.get("fresh_stop_confirm_marks") != 2:
+            return True
+        if economic_return is None:
+            return False
+        outer = self._json_object(position["capital_exit_state_json"])
+        key = "fresh_stop198"
+        prior = outer.get(key)
+        stop = float(policy["hard_stop_return"])
+        if economic_return > stop:
+            if prior is not None:
+                outer.pop(key)
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                    (self._json(outer), position["definition_version"],
+                     position["arm_id"], position["shadow_cohort_id"]),
+                )
+            return False
+        if economic_return <= float(policy["fresh_stop_catastrophe_return"]):
+            return True
+        sequence = int(position["sample_sequence"] or 0)
+        observed = iso(mark_observed_at)
+        pair = str(position["mark_pair_address"] or "")
+        if (isinstance(prior, dict) and prior.get("pair") == pair
+                and sequence > int(prior.get("sequence") or 0)
+                and parse_time(observed) > parse_time(prior["observed_at"])):
+            return True
+        if (not isinstance(prior, dict) or prior.get("pair") != pair
+                or sequence > int(prior.get("sequence") or 0)):
+            outer[key] = {"pair": pair, "sequence": sequence, "observed_at": observed}
+            self.db.execute(
+                "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                (self._json(outer), position["definition_version"],
+                 position["arm_id"], position["shadow_cohort_id"]),
+            )
+        return False
+
     @staticmethod
     def _chain_meme_trailing_activation(policy: Mapping[str, Any]) -> float:
         value = policy.get("trailing_activate_return")
@@ -36499,6 +36596,9 @@ class Store:
                         emergency_liquidity = policy.get("emergency_liquidity_usd")
                         whipsaw_key = (version, arm_id, int(position["shadow_cohort_id"]))
                         self._reset_whipsaw_streak(policy, whipsaw_key, economic_return)
+                        fresh_stop_allowed = self._fresh_stop_confirmation_allows(
+                            policy, position, economic_return, mark_observed_at,
+                        ) if policy.get('fresh_stop_confirm_marks') else True
                         if (
                             liquidity is not None
                             and float(liquidity) < float(emergency_liquidity or 0.0)
@@ -36507,6 +36607,7 @@ class Store:
                         elif (
                             economic_return is not None
                             and economic_return <= float(policy.get("hard_stop_return") or -1.0)
+                            and fresh_stop_allowed
                             and self._whipsaw_guard_allows_stop(
                                 policy, whipsaw_key, elapsed_minutes=elapsed,
                                 liquidity=liquidity, buys=position["mark_buys_5m"],
