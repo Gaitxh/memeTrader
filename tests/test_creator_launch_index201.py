@@ -30,5 +30,15 @@ def test_creator_launch_lookups_use_asof_indexes(tmp_path):
                 (store.TOKEN_LAUNCH_FACT_VERSION, "creator", 10, "2099-01-01"),
             ))
             assert any(f"{table}_token_idx" in row[3] for row in plan)
+        result_indexes = {row[1] for row in store.db.execute(
+            "PRAGMA index_list(onchain_only_shadow_results)")}
+        assert "onchain_only_shadow_results_cohort_idx" in result_indexes
+        result_plan = list(store.db.execute(
+            "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM onchain_only_shadow_results "
+            "WHERE cohort_id=? AND horizon_minutes=240 AND recorded_at<=?",
+            (1, "2099-01-01"),
+        ))
+        assert any("onchain_only_shadow_results_cohort_idx" in row[3]
+                   for row in result_plan)
     finally:
         store.close()

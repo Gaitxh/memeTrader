@@ -5080,6 +5080,8 @@ class Store:
                     ON onchain_only_shadow_results(
                         definition_version,horizon_minutes,terminal_status,recorded_at
                     );
+                CREATE INDEX IF NOT EXISTS onchain_only_shadow_results_cohort_idx
+                    ON onchain_only_shadow_results(cohort_id,horizon_minutes,recorded_at);
                 CREATE TRIGGER IF NOT EXISTS onchain_only_shadow_registrations_no_update
                 BEFORE UPDATE ON onchain_only_shadow_registrations
                 BEGIN SELECT RAISE(ABORT,'onchain-only Shadow registrations are immutable'); END;
