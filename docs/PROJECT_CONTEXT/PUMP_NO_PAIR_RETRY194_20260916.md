@@ -17,8 +17,13 @@ hydration attempt, three have three. Their original discovery sources are 79
 Pons and three BSC four.meme. Thus first-attempt queue starvation and HTTP
 error are not the explanation for this exact 102-ID slice. `no_pair` means the
 Dex batch did not yield a usable matching pair; it does **not** establish that
-no market existed anywhere, nor distinguish an unindexed pair from an
-identity-mapping miss. This is a data-coverage diagnosis, not a profitability
+no market existed anywhere. Hydration status and exposure alone do not
+distinguish a missing pair from an identity mismatch, but the funnel transition
+records separate `quote_returned_no_pair` and `quote_token_mismatch` codes.
+An indexed, bounded query of the first receipt window linked all 102 IDs:
+102 `quote_returned_no_pair`, zero explicit `quote_token_mismatch`. The
+provider's absence of a usable result may still be an indexing delay or a
+different-source pool. This is a data-coverage diagnosis, not a profitability
 claim or retrospective buy signal.
 
 `mark_token_detail_hydration` already schedules a recent Pump-create no-pair
