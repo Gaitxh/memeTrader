@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260916-fullchain-baseline-depth191-provider-fix",
+      "recorded_at": "2026-09-16T11:01:46Z",
+      "title": "交易减少实测与同池跨数据源假深度修正",
+      "problem": "最近两小时源BUY相对前两小时49降至25；同时191深度策略允许把同池DexScreener的0.06U与GeckoTerminal的31913U流动性拼成一次假跨越。",
+      "change": "冻结完整任务与125行原始样本到memory并建立20项验收台账；191状态由token+原池改为token+原池+提供者，仅同源连续帧能生成深度跨越信号，不改变池底线、安全或下一独立报价成交。",
+      "rationale": "当前池的先前GeckoTerminal帧已报30859U，跨提供者差异不是真实深度增长；两条原始案例的跨越帧均来自同一GeckoTerminal源。年轻pumpfun池缺流动性字段增加，不能因此将未知视为可买。",
+      "validation": "6项定向测试通过；7243条持久化后前沿帧只读回放的跨源假信号1降至0。11:00:08Z Paper PID9484加载源码哈希675cfe36…bfc、同一资金期498账户，/health、/api/live、/api/performance正常，Live锁定，快照推进至923430，短窗被动队列22批/0丢弃。191自然仓位仍为0，盈利未验证。",
+      "scope": "Paper单一策略机制的工程纠错、只读诊断与项目记忆；没有新增API、定时研究、资金重置、历史成交或实盘授权。",
+      "next": "按任务台账继续逐机会终局归因与同市场失败对照；比较同负载发现/held时延及严格成本后自然结果，证据不足不自动调参。",
+      "report": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/GOLD_CASE_REAUDIT_AND_DEPTH191_20260916.md"
+    },
+    {
       "id": "20260916-gold-case-per-token-attribution191",
       "recorded_at": "2026-09-16T10:10:06Z",
       "title": "94例金狗逐币首评、成交与退出归因",
