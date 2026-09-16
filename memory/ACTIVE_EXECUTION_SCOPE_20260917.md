@@ -29,6 +29,8 @@ At the later post-213 readback, the first 212 position closed +12.6213U net but 
 
 Stage214 added a separate same-migration-pool second-frame persistence entry trial at `2026-09-16T18:54:51Z` (frontier981803), loaded as policy 507 and still at zero natural positions by frontier981985. The apparent `entry_family_has_no_policy` funnel gap is largely correctly paused, heavily losing R93 arms; do not clone/restart them merely for trade volume. Six admitted/no-source-fill cohorts remain unattributed. Details in `docs/PROJECT_CONTEXT/MIGRATION_CONFIRM214_20260917.md`.
 
+Stage215 later resolved those six using existing cohort-keyed safety records: two BSC WEAK expiries, three Robinhood UNKNOWN/disallowed expiries, one BSC transfer-pausable rejection; all had timely exact-pool follow-up. The manual 507-arm full inventory is `data/research/strategy_inventory214_full.json`. By snapshot982570, 214 and 209 had same-token but different-fill open positions, and 212/control had one same-entry cohort with 212 closed -4.16306U while control remained open. See `docs/PROJECT_CONTEXT/COHORT_TERMINAL_AND_STRATEGY_READBACK215_20260917.md`. Earlier zero-position and unresolved statements refer to their own older cutoffs, not current state.
+
 ## Immediate order
 
 1. **P0 conversion:** use new post-query-fix natural windows to distinguish family-policy absence, exact-pool next-frame failure, safety disposition, source BUY failure and account projection failure. Fix the first *observed* blocking mechanism without weakening the 1000U floor, identity or as-of checks.

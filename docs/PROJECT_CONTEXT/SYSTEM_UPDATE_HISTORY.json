@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-cohort-terminals-strategy-readback215",
+      "recorded_at": "2026-09-16T19:00:00Z",
+      "title": "查明六个准入未成交的安全终点，刷新全部策略和自然试验结果",
+      "problem": "此前六个cohort有准入记录、没有源成交与通用终点，容易误判为报价缺失或队列阻塞；策略清单仍停留在旧截点。",
+      "change": "用现有cohort安全证据逐项归因，并手动刷新13个历史注册版本、507个当前策略的账户/版本索引；记录214/209新同币持仓和212/对照首个同源仓位的真实状态。",
+      "rationale": "六个cohort均有及时同原池后帧；两个BSC弱证据超时、三个Robinhood未知且禁止超时、一个BSC可暂停转账明确拒绝。不能为了制造成交放宽跨策略卖出安全检查。",
+      "validation": "只读SQLite与现有诊断分类器核对；全量策略索引507臂、400有效行为哈希、22重复组、86活跃。214一仓开放；209同币早入场一仓开放；212/对照同cohort及同源成交，212已平仓净亏4.16306U而对照仍开放。",
+      "scope": "诊断与自然前向读回；不改行情API、安全门槛、交易账本、账户资金或实盘状态。",
+      "status": "六个未成交终点已归因；策略经济比较和样本/失败对照仍待自然成熟与研究",
+      "next": "手动在两臂真实平仓后按独立代币与同源成交比较成本后净收益、尾部损失和漏掉的机会；继续111个样本及同期失败对照。",
+      "report": "docs/PROJECT_CONTEXT/COHORT_TERMINAL_AND_STRATEGY_READBACK215_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/COHORT_TERMINAL_AND_STRATEGY_READBACK215_20260917.md",
+      "runtime_verification": "只读截点约2026-09-16T18:58-19:00Z，原资金期Paper运行，未重启。"
+    },
+    {
       "id": "20260917-migration-second-frame214",
       "recorded_at": "2026-09-16T18:56:00Z",
       "title": "迁移新池新增后帧持续性模拟策略，纠正无策略漏斗归因",
