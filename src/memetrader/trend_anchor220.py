@@ -51,6 +51,8 @@ def alias_signal(source: Mapping[str, Any]) -> dict[str, Any] | None:
     current = feature.get("current") or {}
     try:
         signal_at = parse_time(source["observed_at"])
+        feature_at = parse_time(feature["observed_at"])
+        feature_ingested_at = parse_time(feature["ingested_at"])
         start_at = parse_time(window["start_at"])
         end_at = parse_time(window["end_at"])
         receipt_at = parse_time(source["recorded_at"])
@@ -59,7 +61,8 @@ def alias_signal(source: Mapping[str, Any]) -> dict[str, Any] | None:
         anchor = price / (1 + change)
     except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
         return None
-    if not (source.get("decision_key") and start_at < end_at == signal_at <= receipt_at
+    if not (source.get("decision_key") and start_at < end_at == signal_at == feature_at
+            <= feature_ingested_at <= receipt_at
             and 30 <= (end_at - start_at).total_seconds() <= 90
             and isfinite(anchor) and anchor > 0 and isfinite(price) and price > anchor):
         return None

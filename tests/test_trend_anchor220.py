@@ -75,6 +75,8 @@ def source():
         "recorded_at": "2026-09-17T00:01:01Z",
         "selected": {"token_id": "solana:token", "pair_address": "pool"},
         "decision_evidence": {"feature_vector": {
+            "observed_at": "2026-09-17T00:01:00Z",
+            "ingested_at": "2026-09-17T00:01:00.500Z",
             "current": {"price_usd": 1.2},
             "window_30": {"start_at": "2026-09-17T00:00:30Z",
                           "end_at": "2026-09-17T00:01:00Z",
@@ -107,6 +109,9 @@ def test_trend_anchor_rejects_missing_or_future_window():
     assert alias_signal(item) is None
     item = source()
     del item["decision_evidence"]["feature_vector"]["window_30"]
+    assert alias_signal(item) is None
+    item = source()
+    item["decision_evidence"]["feature_vector"]["ingested_at"] = "2026-09-17T00:01:02Z"
     assert alias_signal(item) is None
 
 
