@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-washout-confirm-and-moonbag223",
+      "recorded_at": "2026-09-17T02:56:00Z",
+      "title": "修订亏损Moonbag变体并部署洗盘后半程确认的独立Paper策略",
+      "problem": "169 Moonbag与同入口对照已有148组完全终局同源BUY配对，净结果差-196.7513U；现有洗盘首次反弹入口无法区分假反弹与稍后持续恢复。",
+      "change": "169仅暂停新入场并保留回退回执、旧仓退出和全部历史；新增222独立入场臂，冻结首次信号的低点/当时高点，等后续同原池同来源新鲜报价恢复过半且有卖盘、深度不降，再交给既有安全与下一帧成交链路。",
+      "rationale": "利用同源净结果收敛一个旧策略，同时对真实不同的入场时点做可证伪前向试验；不新增行情接口、不过度放宽全局过滤、不使用事后热门或未来价格。",
+      "validation": "最终严格时钟版的13项相关定向测试通过；222激活时间2026-09-17T02:54:45.669768Z、快照1038193，最终Paper worker110780约02:59:38Z加载，/health running，509策略、同一资金期、paper_only与live_locked均为true。当前没有222自然终局，匹配负载性能未验证。",
+      "scope": "仅Paper策略入场、可回退的169账户新入场控制；不重置账户、不回填成交、不启用实盘或定时研究。",
+      "status": "已实现、测试、部署；新策略自然成交与盈利能力待观察，完整用户任务仍部分未完成。",
+      "next": "人工核对222触发/安全/后帧BUY/退出终端，按独立币及成本后净值对照212；继续样本对照、全策略分类与相近负载数据新鲜度复核。",
+      "report": "docs/PROJECT_CONTEXT/WASHOUT_CONFIRM_AND_MOONBAG223_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/WASHOUT_CONFIRM_AND_MOONBAG223_20260917.md"
+    },
+    {
       "id": "20260917-recent-identity-first-quote221",
       "recorded_at": "2026-09-17T01:34:00Z",
       "title": "补齐重复发现身份后的首次报价机会，保持原池与安全约束",

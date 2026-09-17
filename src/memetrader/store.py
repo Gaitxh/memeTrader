@@ -27519,6 +27519,23 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_washout_confirm222(self) -> int:
+        """Append the later-frame half-reclaim entry as a separate Paper arm."""
+        from .washout_confirm222 import ARM, EXIT_PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"])
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if EXIT_PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[EXIT_PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_tempo_matrix162(self) -> int:
         """Append fresh same-signal Paper pairs that isolate maximum hold time."""
         from . import tempo_matrix162
