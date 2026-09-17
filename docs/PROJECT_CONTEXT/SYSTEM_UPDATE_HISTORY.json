@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-recent-identity-first-quote221",
+      "recorded_at": "2026-09-17T01:34:00Z",
+      "title": "补齐重复发现身份后的首次报价机会，保持原池与安全约束",
+      "problem": "样本CvFCL有32次身份曝光但没有行情快照；第二次采集超时后，到期重试排在大量旧no_pair/error之前。身份可见不等于当时有可交易池。",
+      "change": "现有每链批次至多给最近十分钟再次出现身份线索且已到期的无报价币一个重试位置；不增加API请求、不直接买入，其他旧重试仍轮转。",
+      "rationale": "缩短身份到首次有效原池报价的可避免排队时间；与及时报价但低于1000U池门槛的案例分开处理，不放松安全过滤。",
+      "validation": "9项定向测试通过；Paper worker约01:33Z重载，/health运行，同一资金期，paper_only和live_locked为true。短窗口无采集任务错误，负载匹配的性能和收益效果尚未验证。",
+      "scope": "共享发现采集调度；无交易回填、无新接口、无自动优化计划。",
+      "status": "已实现、测试、部署；自然首次报价改善及盈利能力待观察。",
+      "next": "人工比较近期身份曝光后的原池有效报价率和排队时间，同时核对持仓新鲜度、Dex错误及策略自然成交。",
+      "report": "docs/PROJECT_CONTEXT/RECENT_IDENTITY_RETRY221_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/RECENT_IDENTITY_RETRY221_20260917.md",
+      "runtime_verification": "2026-09-17T01:34Z，新Worker101912，同原资金期Paper运行。"
+    },
+    {
       "id": "20260917-migration-convergence-and-trend-anchor220",
       "recorded_at": "2026-09-17T01:14:32Z",
       "title": "收敛两项亏损迁移策略，新增早期趋势结构失效退出试验",

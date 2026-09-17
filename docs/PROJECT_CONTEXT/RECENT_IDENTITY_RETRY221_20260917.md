@@ -1,0 +1,19 @@
+# Identity-to-first-quote continuity, manual Paper stage 221
+
+## Observed problem and limits
+
+The combined retrospective user lists contain 125+56 ordered lines and 111 distinct research keys. The local casebook matched 80; 31 remain unresolved. This is a user-selected hot-page sample, not an early-decision feature or a set of proven profitable fills. Read-only casebook evidence separates (a) identity without a valid original-pool frame from (b) timely quote but no permissible trade. `CvFCL...` had 32 profile/native identity exposures, no stored market snapshot or evaluation, and a hydration `ConnectTimeout` on its second attempt at 2026-09-16 16:19:55Z. Its next retry was due at 16:24:55Z. Solana then had 3,712 `error` and 34,572 `no_pair` rows; 26,582 of those were due no later than the sample's retry. The sample's latest stored profile receipt was 16:39:46Z, after its failed attempt, yet the generic oldest-first retry could not service it promptly. This is a continuity gap, **not** proof that a tradable pool existed or that buying would have profited.
+
+Controls reject a blanket safety relaxation: `CbyTNf...` (BIKE TYSON) had a valid quote in about 3.8s but no matching entry policy then, and later selected Paper entries lost; `0xe4bc08...` and `88t4...` had timely quotes but were below the configured original-pool liquidity floor. `6ssGt...`, `GY9...` and `6tRot...` had long identity-to-first-quote gaps but their first evaluations lacked curve-stage liquidity; provider pool creation after exposure confounds some apparent delay. Ordinary migration209 entries also lost 191.2451U across 37 terminal tokens at the stage219 cutoff. None justifies a known-under-1000U buy.
+
+## Implemented action
+
+`Store.due_token_detail_hydrations` now reserves at most one address in an existing per-chain batch for a due `no_pair`/`error` token with a fresh identity exposure later than its last failed attempt, observed locally in the latest ten minutes and present in the bounded last 1000 exposure rows. It only operates during the existing generic retry turn; disabled retry turns and held/SELL priority are unchanged. The remaining generic retry capacity retains oldest-first service. This adds no API, no direct BUY, no security bypass and no historical backfill. A newly available frame still traverses the shared original-pool identity, safety, next-frame and strategy checks.
+
+Focused tests: `test_recent_identity_retry221.py`, `test_shared_market_retry182.py`, `test_shared_market_core181.py`: 9 passed. A current-DB read yielded roughly 200-400ms for the full per-chain selection with a 0.1s approximate additional selection cost in unmatched-load calls; compare loaded runtime windows before declaring no regression. The test verifies one retry in a saturated ten-address batch and no mutation of the hydration state at selection.
+
+Deployed by replacing only the exact Paper worker under `scripts/run_paper.ps1` at about 01:33Z. New Python process 101912 (wrapper 111668) loaded the code; `/health` reports running, the same `funding-20260906-v002-final-1000` period, and `/api/live` reports `paper_only=true`, `live_locked=true`, one open position. A very short post-reload performance snapshot showed no collection-task failures but nonzero background Dex queueing; it is not a matched-load speed comparison or evidence of an improved first-quote rate. Revert this stage by restoring the prior single-selector hunk and reloading Paper, without touching trade history.
+
+## Remaining acceptance
+
+After Paper reload, inspect actual promoted tokens' first exact-pool quote/decision and service fairness, Dex 429/error rate, held freshness, and per-chain queue ages over comparable windows. Do not treat an identity-only receipt or later hot rank as an executable entry. The 31 unresolved addresses, all-policy classification and mature costed strategy comparisons remain open in `memory/ACTIVE_EXECUTION_SCOPE_20260917.md`.

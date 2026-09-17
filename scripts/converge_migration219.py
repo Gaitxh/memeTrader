@@ -60,13 +60,17 @@ def run(apply: bool = False) -> dict:
             raise RuntimeError("214 failure threshold not met")
         result = {"status": "preview", "version": version, "terminal": evidence,
                   "already_paused": {arm: bool(policies[arm].get("entry_paused")) for arm in ARMS}}
-        if not apply or all(result["already_paused"].values()):
+        if not apply:
             return result
+        if all(result["already_paused"].values()):
+            db.rollback()
+            return {**result, "status": "already_applied"}
         key = "chain-meme-account-convergence/v1:" + version
         old_row = db.execute("SELECT value_json FROM kv WHERE key=?", (key,)).fetchone()
         old = json.loads(old_row[0]) if old_row else {"arms": {}}
         new = copy.deepcopy(old)
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        new["activated_at"] = old.get("activated_at") or now
         for arm in ARMS:
             new.setdefault("arms", {})[arm] = {
                 "state": "FAILED_FORWARD_EXPECTANCY", "assessment_status": "FAILED",

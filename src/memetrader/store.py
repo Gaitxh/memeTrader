@@ -10016,7 +10016,40 @@ class Store:
                         if retry is not None:
                             reserved_retries.append(retry)
                             reserved_ids.add(str(retry["token_id"]))
-        pending_available = max(0, available - len(reserved_followups) - len(reserved_retries))
+        recent_identity_retry = []
+        if (prefer_fresh and selected_chains and retry_limit > 0
+                and available > len(reserved_followups) + len(reserved_retries)):
+            # One existing batch slot can revisit a due no-pair/error token
+            # after a new identity receipt; old generic retries keep their lane.
+            recent_at = iso(parse_time(due_at) - timedelta(minutes=10))
+            with self._lock:
+                candidates = self.db.execute(
+                    "SELECT hydration.* FROM ("
+                    "SELECT token_id,MAX(recorded_at) AS last_receipt FROM ("
+                    "SELECT token_id,chain,role,recorded_at "
+                    "FROM token_discovery_exposures ORDER BY id DESC LIMIT 1000"
+                    ") AS exposure WHERE role='identity' AND recorded_at>=? "
+                    "AND chain IN (" + ",".join("?" for _ in selected_chains) + ") "
+                    "GROUP BY token_id) AS recent "
+                    "JOIN token_detail_hydration AS hydration ON hydration.token_id=recent.token_id "
+                    "WHERE hydration.status IN ('no_pair','error') "
+                    "AND hydration.followup_until IS NULL "
+                    "AND hydration.next_attempt_at IS NOT NULL "
+                    "AND hydration.next_attempt_at<=? "
+                    "AND (hydration.last_attempt_at IS NULL "
+                    "OR recent.last_receipt>hydration.last_attempt_at) "
+                    "ORDER BY recent.last_receipt DESC LIMIT 3",
+                    (recent_at, *selected_chains, due_at),
+                ).fetchall()
+            recent_identity_retry = [next(
+                (row for row in candidates if str(row["token_id"]) not in reserved_ids),
+                None,
+            )]
+            recent_identity_retry = [row for row in recent_identity_retry if row is not None]
+        pending_available = max(
+            0, available - len(reserved_followups) - len(reserved_retries)
+            - len(recent_identity_retry),
+        )
         base_sql = f"""
             SELECT * FROM token_detail_hydration
             WHERE status IN ({{statuses}})
@@ -10087,10 +10120,11 @@ class Store:
                 selected = selected[:pending_available]
             selected.extend(reserved_followups)
             selected.extend(reserved_retries)
+            selected.extend(recent_identity_retry)
             spare = max(0, available - len(selected))
             selected.extend(lifecycle_retries[:spare])
             spare = max(0, available - len(selected))
-            reserved_ids = {str(row["token_id"]) for row in reserved_retries}
+            reserved_ids = {str(row["token_id"]) for row in (*reserved_retries, *recent_identity_retry)}
             retries = fetch(
                 ("no_pair", "error"), "next_attempt_at,enqueued_at",
                 min(available, spare + len(reserved_ids), retry_limit + len(reserved_ids)),
