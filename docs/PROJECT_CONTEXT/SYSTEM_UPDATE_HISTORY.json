@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260917-migration-convergence-and-trend-anchor220",
+      "recorded_at": "2026-09-17T01:14:32Z",
+      "title": "收敛两项亏损迁移策略，新增早期趋势结构失效退出试验",
+      "problem": "209已在37个独立终局币亏损191.2451U；214在30个终局币亏损95.8697U，其二次确认未证明改善。同源早期趋势策略存在持仓后回落的洗出与尾损问题。",
+      "change": "209和214通过可回退账户控制记录停止新开仓，历史成交不变；新增220与144趋势臂共享原入场，在决策时冻结真实30秒窗口起点，买后两次新鲜原池报价跌破该价时请求后帧退出。",
+      "rationale": "212结构失效退出在4组完全终局的同源成交对照中合计少亏50.33957U，故以不同的早期趋势入口检验可迁移性，不增加API，也不把事后峰值带入决策。",
+      "validation": "定向8项测试通过；当前Paper 508臂、220起点2026-09-17T01:14:05.770435Z/快照1021134、Live锁定、原资金期，健康接口正常。",
+      "scope": "仅Paper策略前向版本和可回退的新开仓控制；未重置账户、未回填订单、未启动定时优化。",
+      "status": "已实现、测试、部署；220尚无自然持仓，盈利能力未证明。",
+      "next": "人工复核220与144同源同成交终局配对及右尾收益，继续样本对照、发现采集性能和完整策略分类。",
+      "report": "docs/PROJECT_CONTEXT/STRATEGY_CONVERGENCE_AND_TREND_ANCHOR220_20260917.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/STRATEGY_CONVERGENCE_AND_TREND_ANCHOR220_20260917.md",
+      "runtime_verification": "2026-09-17T01:14:32Z，新Worker112480，Paper运行，508臂；209/214暂停新入场。"
+    },
+    {
       "id": "20260917-natural-paper-readback218",
       "recorded_at": "2026-09-16T19:17:03Z",
       "title": "自然模拟前向新截点：早迁移入场继续亏损，退出试验仍需配对",

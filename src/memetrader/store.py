@@ -27407,6 +27407,24 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_trend_anchor220(self) -> int:
+        """Append a same-entry runner with a frozen breakout-origin exit."""
+        from .trend_anchor220 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_migration_confirm214(self) -> int:
         """Append a second-frame migration Paper arm at its own frontier."""
         from .migration_confirm214 import ARM, PARENT, policy
@@ -29896,17 +29914,21 @@ class Store:
             "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
             "AND token_id=? AND status='open' AND shadow_cohort_id<>? LIMIT 1",
             (version, str(d['arm_id']), token_id, cohort_id)).fetchone()]
-        reclaim_anchor212 = None
-        if any(str(d['arm_id']) == 'alpha212_washout_reclaim_anchor_v1' for d in decisions):
-            from .washout_reclaim212 import ARM as RECLAIM212_ARM, frozen_anchor
+        anchor_arms = {p['arm_id'] for p in definition['policies']
+                       if p.get('reclaim_anchor_exit212')}
+        anchor_decisions = {str(d['arm_id']) for d in decisions} & anchor_arms
+        reclaim_anchors = {}
+        if anchor_decisions:
+            from .washout_reclaim212 import frozen_anchor
             cohort = self.db.execute(
                 'SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',
                 (cohort_id,),
             ).fetchone()
             signals = self._json_object(cohort['feature_json']).get('cohort_signals', {}) if cohort else {}
-            reclaim_anchor212 = frozen_anchor(signals.get(RECLAIM212_ARM) or {}, filled_at)
-            if reclaim_anchor212 is None:
-                decisions = [d for d in decisions if str(d['arm_id']) != RECLAIM212_ARM]
+            reclaim_anchors = {arm: frozen_anchor(signals.get(arm) or {}, filled_at)
+                               for arm in anchor_decisions}
+            decisions = [d for d in decisions if str(d['arm_id']) not in anchor_decisions
+                         or reclaim_anchors[str(d['arm_id'])] is not None]
         from .cohort_enrollment import open_or_reserved_full
         pending_limits={p['arm_id']:int(p['entry_filter']['max_concurrent_positions'])
             for p in definition['policies'] if p.get('trajectory_engine')=='v144'}
@@ -30116,11 +30138,11 @@ class Store:
             )
             if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
                 continue
-            if arm_id == 'alpha212_washout_reclaim_anchor_v1' and reclaim_anchor212 is not None:
+            if arm_id in reclaim_anchors:
                 self.db.execute(
                     "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
                     "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
-                    (self._json({'reclaim_anchor212_frozen': reclaim_anchor212}),
+                    (self._json({'reclaim_anchor212_frozen': reclaim_anchors[arm_id]}),
                      version, arm_id, int(cohort_id)),
                 )
             self.db.execute(
