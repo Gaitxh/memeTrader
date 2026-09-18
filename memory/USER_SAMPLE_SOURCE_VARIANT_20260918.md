@@ -1,0 +1,5 @@
+# User sample source variant, 2026-09-18
+
+The latest inline Appendix A ends with `0x3ba500f1ababbcf0f0247d06d1c56fd7e6c4c0` (38 hexadecimal characters after `0x`). The previously supplied 56-line supplement in `USER_ADDITIONAL_SAMPLES_20260917.txt` ends with `0x3ba500f1ababbcf0f0247d06d1c56fd7e6c4c09` (39 hexadecimal characters after `0x`). Both strings are preserved as separate user-source observations; neither is a complete 40-character EVM address. Neither may be silently repaired, merged into a canonical token, used as an address allowlist, or counted as a verified tradeable sample.
+
+The prior 111-key casebook and its 80 matched/31 unresolved counts describe the earlier source version. The latest inline version requires a separate unresolved row; the other 180 ordered lines remain as represented by `USER_EXECUTION_REQUEST_20260916.md` plus `USER_ADDITIONAL_SAMPLES_20260917.txt` until a fresh ordered-list comparison is recorded. A format pattern alone never establishes chain, token-versus-pool identity, tradability or profit.
