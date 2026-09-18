@@ -1,0 +1,158 @@
+--- a/src/memetrader/runtime.py
++++ b/src/memetrader/runtime.py
+@@ -1479,6 +1479,7 @@
+                     self.store.register_chain_meme_activity_flow224()
+                     self.store.register_chain_meme_old_pool_absorption227()
+                     self.store.register_chain_meme_impulse_retest230()
++                    self.store.register_chain_meme_pressure234()
+                     self.store.register_chain_meme_migration_first209()
+                     self.store.register_chain_meme_migration_confirm214()
+                     self.store.register_chain_meme_activity_confirm211()
+@@ -8685,6 +8686,10 @@
+             from .impulse_retest230 import Tracker as RetestTracker
+             self.store._impulse_retest230 = RetestTracker(utcnow())
+         retest230 = self.store._impulse_retest230
++        if not hasattr(self.store, '_pressure234'):
++            from .pressure_sequence234 import Tracker as PressureTracker
++            self.store._pressure234 = PressureTracker(utcnow())
++        pressure234 = self.store._pressure234
+         from .mode_learning145 import Coordinator
+         if not hasattr(self.store,"_mode_learning144"):
+             self.store._mode_learning144=Coordinator(self.store)
+@@ -8778,10 +8783,12 @@
+ 
+         async def project_pending():
+             nonlocal sampled, projected, compute_seconds, deadline_dispatches_while_active
++            from .signal_clock234 import SignalClockCache
++            signal_time = SignalClockCache(parse_time)
+             def earliest_expiry(item):
+                 signals = item.get("signals", {})
+                 return min(
+-                    (parse_time(signal["recorded_at"]) for signal in signals.values()),
++                    (signal_time(signal) for signal in signals.values()),
+                     default=utcnow(),
+                 )
+ 
+@@ -8793,14 +8800,14 @@
+                 # A newer batch must neither erase another arm's frozen signal
+                 # nor renew its original 60-second admission window.
+                 expired = {arm: signal for arm, signal in item['signals'].items()
+-                    if not 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
++                    if not 0 <= (now-signal_time(signal)).total_seconds() <= 60}
+                 dispatch_counts = item.setdefault("dispatch_counts", {})
+                 trajectory.counts['pending_signal_expired_never_dispatched'] += sum(
+                     int(dispatch_counts.get(arm, 0)) == 0 for arm in expired)
+                 trajectory.counts['pending_signal_expired_after_dispatch'] += sum(
+                     int(dispatch_counts.get(arm, 0)) > 0 for arm in expired)
+                 retained = {arm: signal for arm, signal in item['signals'].items()
+-                    if 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
++                    if 0 <= (now-signal_time(signal)).total_seconds() <= 60}
+                 trajectory.counts['pending_signal_expired'] += len(item['signals'])-len(retained)
+                 item['signals'] = retained
+                 item['dispatch_counts'] = {
+@@ -8821,7 +8828,7 @@
+                     continue
+                 if not self._chain_meme_active_idle().is_set():
+                     oldest_age = max(
+-                        (now - parse_time(signal["recorded_at"])).total_seconds()
++                        (now - signal_time(signal)).total_seconds()
+                         for signal in retained.values()
+                     )
+                     # Preserve the primary entry lane, but do not let continuous
+@@ -8848,6 +8855,8 @@
+                 dispatched.add(identity)
+                 sampled += 1
+                 await asyncio.sleep(0)
++            trajectory.counts['signal_clock_cache_hits234'] += signal_time.hits
++            trajectory.counts['signal_clock_cache_misses234'] += signal_time.misses
+ 
+         extra148_seconds = 0.0
+         extra148_items = 0
+@@ -8980,6 +8989,7 @@
+             activity_tempo_signals = {}
+             absorption_signals = {}
+             retest_signals = {}
++            pressure_signals = {}
+             migration_first_signals = {}
+             migration_confirm_signals = {}
+             activity_confirm_signals = {}
+@@ -9008,6 +9018,10 @@
+                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                 if tempo_signal is not None:
+                     activity_tempo_signals[identity] = tempo_signal
++                pressure_output = pressure234.accept(frame, now, floor=getattr(
++                    self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
++                if pressure_output:
++                    pressure_signals[identity] = pressure_output
+                 retest_signal = retest230.accept(frame, now, floor=getattr(
+                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                 if retest_signal is not None:
+@@ -9089,9 +9103,13 @@
+             # Existing passive batches deliver classifier/event signals to the
+             # same durable cohort claim, safety wait and next-frame executor.
+             for identity in quotes:
++                if identity in pressure_signals:
++                    signals.setdefault(identity, {}).update(pressure_signals[identity])
+                 if identity in retest_signals:
+                     from .impulse_retest230 import aliases as retest_aliases
+                     signals.setdefault(identity, {}).update(retest_aliases(retest_signals[identity]))
++                    from .pressure_sequence234 import hybrid_signal
++                    signals[identity].update(hybrid_signal(retest_signals[identity]))
+                 if identity in absorption_signals:
+                     from .old_pool_absorption227 import ARM as ABSORPTION_ARM
+                     signals.setdefault(identity, {})[ABSORPTION_ARM] = absorption_signals[identity]
+@@ -9250,6 +9268,7 @@
+         state["dropped_batches"] = getattr(self, "_cohort_dropped_batches", 0)
+         state["dropped_quotes"] = getattr(self, "_cohort_dropped_quotes", 0)
+         state["impulse_retest230"] = retest230.snapshot()
++        state["pressure234"] = pressure234.snapshot()
+         self._cohort_state, self._cohort_pending = state, pending
+         # Round-robin pending identities; bounded work must not starve the tail.
+         for identity in dispatched:
+@@ -10549,6 +10568,9 @@
+                     except Exception:
+                         pass
+                 # Reuse the existing checkpoint; zero positions need stage-level evidence.
++                pressure234 = getattr(self.store, '_pressure234', None)
++                if pressure234 is not None:
++                    timing_snapshot['pressure234'] = pressure234.snapshot()
+                 retest230 = getattr(self.store, '_impulse_retest230', None)
+                 if retest230 is not None:
+                     try:
+@@ -10609,7 +10631,7 @@
+             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
+             source=Path(__file__).parent
+             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
+-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','impulse_retest230.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
++                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','impulse_retest230.py','pressure_sequence234.py','signal_clock234.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
+                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
+                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
+                    'tempo_matrix162.py','pons_economics.py',
+--- a/src/memetrader/store.py
++++ b/src/memetrader/store.py
+@@ -27682,6 +27682,25 @@
+             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+             return 1
+ 
++    def register_chain_meme_pressure234(self) -> int:
++        """Append three Paper trials without changing parent contracts."""
++        from .pressure_sequence234 import PARENT, policies
++        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
++        with self._lock, self.db:
++            registration = self._chain_meme_trader_registration(version)
++            if registration is None:
++                return 0
++            definition = self._chain_meme_trader_effective_definition(version, registration['definition_json'])
++            by_arm = {p['arm_id']: p for p in definition['policies']}
++            if PARENT not in by_arm:
++                return 0
++            activated, added = utcnow(), 0
++            for policy in policies(by_arm[PARENT]):
++                if policy['arm_id'] not in by_arm:
++                    self.append_chain_meme_trader_policy(policy, activated_at=activated)
++                    added += 1
++            return added
++
+     def register_chain_meme_impulse_retest230(self) -> int:
+         """Append the two retest arms at a shared new Paper frontier."""
+         from .impulse_retest230 import PARENT, policies
