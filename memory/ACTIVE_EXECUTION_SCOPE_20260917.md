@@ -6,6 +6,10 @@ The current user request is the 12-section document in `USER_EXECUTION_REQUEST_2
 
 Purpose: improve risk-adjusted *natural Paper* net results after costs, failed exits and complete writeoffs while retaining discovery coverage, decision freshness, accounting truth and operational stability. More policy IDs, more trades, a healthy UI or an offline winner fit are not success. Live stays locked, the existing funding period and history stay intact, and review/optimization is user-triggered rather than scheduled.
 
+## Latest manual continuation — 2026-09-18 stage 224
+
+The user reiterated the entire twelve-section scope after pointing out that the previous ~22 hours did not include continuous Codex strategy iteration. At the current read, 222 had 51 terminal independent tokens/-356.5766U, including eight full pool writeoffs. It is now **paused for new entry only** by reversible receipt `washout224:convergence:2026-09-18T01:30:19.955281Z`; its one open position at pause retained old exit rules. 220 was negative in absolute Paper net (-276.39U on 137 terminals) but reduced loss by +69.21U versus 144 across 137 exact same-source-BUY terminal pairs, so its exit mechanism was not discarded. New distinct old-pool short-hold/flow/depth exit Paper arm `activity224_old_pool_flow_floor_fast_v1` registered at `2026-09-18T01:30:42.809338Z`/snapshot1260478, bringing policy count to 510; six new targeted tests (12 including adjacent 200/222) passed and snapshots advanced after Paper reload. No 224 natural trade or positive-expectancy claim exists yet. Combined sample ledger remains 111 research keys with only 13 independent case-token matched-control endpoints; R02/R04/R05/R06/R07/R08/R11/R18/R20 remain open. Exact evidence, runtime boundary and rollback: `docs/PROJECT_CONTEXT/WASHOUT_AND_OLD_POOL224_20260918.md`. The next manual slice should check 224 source BUY/exit terminals against 193/200 and resolve P0 discovery-to-source-BUY losses and ordinary/failed controls; do not schedule this work.
+
 ## Work and acceptance map
 
 | ID | Required work and problem to solve | Current evidence / gap | Acceptance |

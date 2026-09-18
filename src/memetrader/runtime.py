@@ -1460,6 +1460,7 @@ class Runtime:
                     self.store.register_chain_meme_depth_floor199()
                     self.store.register_chain_meme_activity_tempo193()
                     self.store.register_chain_meme_activity_tempo_fast200()
+                    self.store.register_chain_meme_activity_flow224()
                     self.store.register_chain_meme_migration_first209()
                     self.store.register_chain_meme_migration_confirm214()
                     self.store.register_chain_meme_activity_confirm211()
@@ -9018,6 +9019,8 @@ class Runtime:
                     signals.setdefault(identity, {})[ACTIVITY_TEMPO_ARM] = activity_tempo_signals[identity]
                     from .activity_tempo_fast200 import ARM as ACTIVITY_FAST_ARM, alias_signal
                     signals[identity][ACTIVITY_FAST_ARM] = alias_signal(activity_tempo_signals[identity])
+                    from .activity_flow224 import ARM as ACTIVITY_FLOW_ARM, alias_signal as flow_alias
+                    signals[identity][ACTIVITY_FLOW_ARM] = flow_alias(activity_tempo_signals[identity])
                 if identity in depth_cross_signals:
                     from .depth_cross191 import ARMS as DEPTH_CROSS_ARMS
                     for arm in DEPTH_CROSS_ARMS:
@@ -10504,7 +10507,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

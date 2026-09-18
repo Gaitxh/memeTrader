@@ -1,5 +1,9 @@
 # Full-chain execution ledger, 2026-09-16
 
+### Stage 224: manual strategy convergence and old-pool exit trial, 2026-09-18
+
+R06/R07/R08/R12 are **implemented/partially verified**, not fully accepted: 222 had 51 independent natural terminal tokens/-356.5766U with eight full pool writeoffs and is paused for new entries by reversible Paper control receipt; old exits/history remain. New 224 old-pool same-entry flow/depth short-hold arm is deployed from snapshot1260478, with six targeted tests (12 including adjacent 200/222) and advancing post-reload data; there is no 224 natural position yet. 220 remains a negative absolute account but has +69.21U over 144 in 137 fully terminal exact-source-BUY pairs, so do not conflate relative exit improvement with positive expectancy. R02/R03/R04/R05/R11/R18/R20 remain open: no complete current funnel, no complete ordinary/failed controls, and no matched-load latency proof. Report and acceptance pointers: `docs/PROJECT_CONTEXT/WASHOUT_AND_OLD_POOL224_20260918.md`. No reset, live authority, or scheduled review.
+
 Latest natural cutoff `2026-09-16T19:17:03Z`/snapshot984980: 209 10 distinct-token positions, one open, -46.7267U realized; 214 two terminal positions, -1.0789U; 212 three terminal positions, +8.8583U; contemporary 212 control two positions, one open, -16.0430U realized. Raw totals are not paired efficacy estimates. See the dated addendum in `docs/PROJECT_CONTEXT/FORWARD_PAIR_AND_CASE_CONTROL216_20260917.md`.
 
 ### Stage 217: held quote deadline experiment rejected, 2026-09-17
