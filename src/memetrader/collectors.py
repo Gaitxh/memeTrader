@@ -2462,7 +2462,10 @@ class DexScreenerClient:
         primary_url: Any = "",
         links: list[Any] | tuple[Any, ...] = (),
     ) -> list[dict[str, Any]]:
-        token_id = f"{chain.lower()}:{address}"
+        # Canonical identity for queue and known-token lookup; raw stays unchanged.
+        chain = str(chain).strip().lower()
+        address = canonical_token_address(chain, address)
+        token_id = f"{chain}:{address}"
         candidates: list[tuple[Any, str, str]] = [(primary_url, surface, "")]
         for item in links:
             if isinstance(item, dict):
