@@ -1461,6 +1461,7 @@ class Runtime:
                     self.store.register_chain_meme_activity_tempo193()
                     self.store.register_chain_meme_activity_tempo_fast200()
                     self.store.register_chain_meme_activity_flow224()
+                    self.store.register_chain_meme_old_pool_absorption227()
                     self.store.register_chain_meme_migration_first209()
                     self.store.register_chain_meme_migration_confirm214()
                     self.store.register_chain_meme_activity_confirm211()
@@ -8592,6 +8593,14 @@ class Runtime:
             self.store._trajectory144=Engine144(saved['started_at'] if saved else utcnow())
             if saved:self.store._trajectory144.load_state(saved)
         trajectory144=self.store._trajectory144
+        # ALPHA149: the isolated engine for the alpha149_* arms must be fed the
+        # same observed frames as the other trajectory engines, otherwise its
+        # pools stay empty and every alpha149 entry waits forever on
+        # "await_distinct_dex_trajectory_frame".
+        if not hasattr(self.store, '_alpha149'):
+            from .alpha149 import Engine as Engine149
+            self.store._alpha149 = Engine149(utcnow())
+        trajectory149 = self.store._alpha149
         if not hasattr(self.store, '_depth_cross191'):
             from .depth_cross191 import Tracker as DepthCrossTracker
             self.store._depth_cross191 = DepthCrossTracker(utcnow())
@@ -8604,14 +8613,10 @@ class Runtime:
             from .activity_tempo193 import Tracker as ActivityTempoTracker
             self.store._activity_tempo193 = ActivityTempoTracker(utcnow())
         activity_tempo193 = self.store._activity_tempo193
-        # ALPHA149: the isolated engine for the alpha149_* arms must be fed the
-        # same observed frames as the other trajectory engines, otherwise its
-        # pools stay empty and every alpha149 entry waits forever on
-        # "await_distinct_dex_trajectory_frame".
-        if not hasattr(self.store, '_alpha149'):
-            from .alpha149 import Engine as Engine149
-            self.store._alpha149 = Engine149(utcnow())
-        trajectory149 = self.store._alpha149
+        if not hasattr(self.store, '_old_pool_absorption227'):
+            from .old_pool_absorption227 import Tracker as AbsorptionTracker
+            self.store._old_pool_absorption227 = AbsorptionTracker(utcnow())
+        absorption227 = self.store._old_pool_absorption227
         from .mode_learning145 import Coordinator
         if not hasattr(self.store,"_mode_learning144"):
             self.store._mode_learning144=Coordinator(self.store)
@@ -8905,6 +8910,7 @@ class Runtime:
             depth_cross_signals = {}
             depth_floor_signals = {}
             activity_tempo_signals = {}
+            absorption_signals = {}
             migration_first_signals = {}
             migration_confirm_signals = {}
             activity_confirm_signals = {}
@@ -8933,6 +8939,10 @@ class Runtime:
                     self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if tempo_signal is not None:
                     activity_tempo_signals[identity] = tempo_signal
+                absorption_signal = absorption227.accept(frame, now, floor=getattr(
+                    self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                if absorption_signal is not None:
+                    absorption_signals[identity] = absorption_signal
                 confirm211 = getattr(self, "_activity_confirm211", None)
                 if confirm211 is not None:
                     confirmed = confirm211.accept(frame, now, floor=getattr(
@@ -9006,6 +9016,9 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in absorption_signals:
+                    from .old_pool_absorption227 import ARM as ABSORPTION_ARM
+                    signals.setdefault(identity, {})[ABSORPTION_ARM] = absorption_signals[identity]
                 if identity in migration_confirm_signals:
                     from .migration_confirm214 import ARM as MIGRATION_CONFIRM_ARM
                     signals.setdefault(identity, {})[MIGRATION_CONFIRM_ARM] = migration_confirm_signals[identity]
@@ -10507,7 +10520,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',

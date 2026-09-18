@@ -27441,6 +27441,24 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_old_pool_absorption227(self) -> int:
+        """Append a three-observation old-pool Paper entry at its own frontier."""
+        from .old_pool_absorption227 import ARM, PARENT, policy
+
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            by_arm = {item.get("arm_id"): item for item in definition["policies"]}
+            if PARENT not in by_arm or ARM in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_migration_first209(self) -> int:
         """Append a locally received migration's first tradable quote Paper arm."""
         from .migration_first209 import ARM, PARENT, policy
