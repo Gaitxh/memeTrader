@@ -10,9 +10,18 @@ MAX_COMPONENTS = 32
 MAX_SAMPLES = 120
 
 def _percentile(values: deque[float], quantile: float) -> float | None:
-    if not values:
-        return None
+    return _sorted_percentile(sorted(values), quantile)
+
+
+def _percentiles(values: deque[float]) -> dict[str, float | None]:
     ordered = sorted(values)
+    return {name: _sorted_percentile(ordered, q) for name, q in
+            (("p50", .50), ("p90", .90), ("p95", .95), ("p99", .99))}
+
+
+def _sorted_percentile(ordered: list[float], quantile: float) -> float | None:
+    if not ordered:
+        return None
     position = (len(ordered) - 1) * quantile
     lower = math.floor(position)
     upper = math.ceil(position)
@@ -160,18 +169,8 @@ class RuntimeTiming:
             components[name] = {
                 "sample_count": len(durations),
                 "interval_sample_count": len(intervals),
-                "actual_interval_seconds": {
-                    "p50": _percentile(intervals, 0.50),
-                    "p90": _percentile(intervals, 0.90),
-                    "p95": _percentile(intervals, 0.95),
-                    "p99": _percentile(intervals, 0.99),
-                },
-                "duration_seconds": {
-                    "p50": _percentile(durations, 0.50),
-                    "p90": _percentile(durations, 0.90),
-                    "p95": _percentile(durations, 0.95),
-                    "p99": _percentile(durations, 0.99),
-                },
+                "actual_interval_seconds": _percentiles(intervals),
+                "duration_seconds": _percentiles(durations),
                 "failures": timing["failures"],
                 "items": timing["items"],
                 "configured_interval_seconds": timing["configured_interval_seconds"],
@@ -186,12 +185,7 @@ class RuntimeTiming:
             "passive_queue": {
                 **self._passive_queue,
                 "wait_sample_count": len(self._passive_waits),
-                "wait_seconds": {
-                    "p50": _percentile(self._passive_waits, 0.50),
-                    "p90": _percentile(self._passive_waits, 0.90),
-                    "p95": _percentile(self._passive_waits, 0.95),
-                    "p99": _percentile(self._passive_waits, 0.99),
-                },
+                "wait_seconds": _percentiles(self._passive_waits),
             },
             "held_retrieval": {
                 "bucket_seconds": 10, "scope": "open_and_valid_pending_primary_lane",
