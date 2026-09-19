@@ -55,6 +55,6 @@
 ## 部署回读
 
 - 11项相关测试通过；另一次包含已有`test_cohort_experiments.py`的宽跑出现其既有“期望12、实际32”策略数断言，不由255信号或安全代理行为造成，未篡改测试掩盖。
-- `2026-09-19T09:21:58Z`由原监督器重载，实际运行PID `46364`，532条策略；健康接口running，原资金期不变，Paper-only、Live locked。
+- `2026-09-19T09:21:58Z`首次由原监督器重载；一次误发的无索引诊断全表扫描造成I/O竞争，终止诊断并再次重载后，`09:29:31Z`实际运行PID为`35308`、532条策略。健康接口恢复running，原资金期不变，Paper-only、Live locked。
 - `revision255_synthetic_dex_continuity_v1`已回读为`ACTIVE_FORWARD / INSUFFICIENT / 20U / cap16`；`quiet_renewal_v1`为`PAUSED_NEW_ENTRY`，legacy control仍`ACTIVE_FORWARD`。
 - 部署时系统有3个开放仓、2个独立Token；没有重置、补单或改写历史。255尚无自然终局，不能宣称改善PNL。

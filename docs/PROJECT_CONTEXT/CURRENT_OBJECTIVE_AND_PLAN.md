@@ -5,7 +5,7 @@
 父事件缺失和真实稀疏。新增255：原`synthetic_fast_harvest_v1`的8次准入全部因安全源/同池卖出证明缺失而过期，原臂不动，
 255复用同一BUILDING信号与退出，只允许无明确危险证据且两帧原池连续性成立的限域Paper近似；不增加请求、不称安全证明。
 `quiet_renewal_v1`与legacy control四次同入场终局中3次更差1次相同，增量-24.699310U，已可逆暂停新入场，保留历史/退出。
-11项相关测试通过；09:21:58Z由原监督器重载PID46364/532臂。255已回读ACTIVE_FORWARD，20U/cap16；候选quiet renewal为
+11项相关测试通过；一次误发无索引诊断扫描造成短时I/O竞争，终止诊断并重载后09:29:31Z恢复running，PID35308/532臂。255已回读ACTIVE_FORWARD，20U/cap16；候选quiet renewal为
 PAUSED_NEW_ENTRY、legacy control仍ACTIVE_FORWARD。原资金期/Paper/Live锁不变；255尚无自然终局，不宣称改善PNL。账户耗尽继续完全排除。
 
 ---
