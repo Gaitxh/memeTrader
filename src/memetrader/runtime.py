@@ -9155,6 +9155,19 @@ class Runtime:
                             else 0
                         ) for arm, signal in incoming.items()},
                     }}
+                # Publish urgency when the signal is created, not only when the
+                # slower pattern observer eventually asks for its follow-up.
+                # This uses the signal's remaining original 60-second lifetime;
+                # it neither extends the decision window nor adds a request.
+                from .followup_capacity import reserve_signal_followup_capacity
+                reserved_for = reserve_signal_followup_capacity(
+                    getattr(self, "market_http", None),
+                    pending[identity]["signals"],
+                    now=now,
+                    monotonic_now=asyncio.get_running_loop().time(),
+                )
+                if reserved_for > 0:
+                    trajectory.counts["signal_followup_capacity_reserved"] += 1
             for identity, (token, snapshot) in quotes.items():
                 if identity in pending and "quote" not in pending[identity]:
                     pending[identity]["quote"] = (token, snapshot, received)
@@ -10527,7 +10540,7 @@ class Runtime:
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',
-                   'collectors.py','followup_resources.py','held_flap_recovery.py')
+                   'collectors.py','followup_resources.py','followup_capacity.py','held_flap_recovery.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},

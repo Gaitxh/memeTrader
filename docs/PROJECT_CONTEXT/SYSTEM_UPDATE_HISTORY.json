@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260919-foundation-followup-capacity",
+      "recorded_at": "2026-09-19T08:40:00Z",
+      "title": "基础链：在信号产生时提前保护后续确认帧容量",
+      "problem": "生产遥测中策略后续确认请求的槽位等待p95约14.64秒，被动判断队列p95约16.19秒；容量保护到较慢的pattern observer真正请求时才发布，普通后台工作可在信号产生后的空窗占满低优先级容量。",
+      "change": "新增按信号原始60秒期限剩余时间发布的follow-up容量保护，并在cohort信号写入pending当刻调用；只暂缓第五个普通后台请求，不新增请求、不提高总并发。",
+      "rationale": "让数据采集优先级与策略信号时钟在同一时刻生效，减少确认帧排队，同时保留发现覆盖、持仓高优先级、同池鲜度、安全和下一帧语义。",
+      "validation": "36项定向测试通过。08:38:42Z重载PID44044/531臂，followup_capacity.py manifest哈希匹配，原资金期、20U、cap16、Paper-only/Live locked不变；08:39:52Z健康running。截至08:43:48Z新保护自然触发288次，follow-up槽位等待p95约0.437秒（部署前14.64秒），被动队列253批、p95约2.30秒、0丢弃（部署前16.19秒），持仓0覆盖缺口。窗口负载/样本不可比。",
+      "scope": "共享DEX调度与信号后续帧时序；未改策略阈值、历史、账户、原池规则、总并发、Live或账户耗尽策略。",
+      "status": "实现、测试、部署和短窗自然机制读回完成；长期同负载时延、成交转化与收益待严格前向观察，不宣称稳定倍数或盈利。",
+      "report": "docs/PROJECT_CONTEXT/FOUNDATION_FOLLOWUP_CAPACITY_20260919.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/FOUNDATION_FOLLOWUP_CAPACITY_20260919.md"
+    },
+    {
       "id": "20260919-strategy-batch251-254",
       "recorded_at": "2026-09-19T08:26:35.543520Z",
       "title": "四项新策略：环境保护、去相关路由、BSC生存确认与真实参与广度",

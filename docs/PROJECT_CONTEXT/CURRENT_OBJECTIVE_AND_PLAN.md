@@ -1,3 +1,13 @@
+# 当前恢复入口：基础链后续帧容量保护（2026-09-19）
+
+先读 `docs/PROJECT_CONTEXT/FOUNDATION_FOLLOWUP_CAPACITY_20260919.md`。生产遥测确认策略后续确认帧在低优先级槽位 p95 等待约14.64秒，
+随后被动判断队列p95再等约16.19秒；原因是容量保护到pattern observer真正请求时才发布，信号产生后的空窗允许普通后台工作占满槽位。
+现已在信号写入pending当刻按原60秒期限的剩余时间发布保护，不续期、不加请求、不提高并发且不动持仓优先级。36项定向测试通过，
+08:38:42Z重载PID44044/531臂，新模块hash匹配，原资金期/20U/cap16/Paper/Live锁不变；08:39:52Z健康running。
+截至08:43:48Z新保护已自然触发288次；follow-up槽位等待p95约0.437秒（部署前14.64秒），被动队列253批、p95约2.30秒、0丢弃（部署前16.19秒）。窗口负载/样本不可比，仅证明机制生效和短窗改善，不宣称长期倍数或盈利。
+
+---
+
 ## Current user scope — full-chain Paper execution, 2026-09-17
 
 The active requirement and acceptance index is `memory/ACTIVE_EXECUTION_SCOPE_20260917.md`, with per-item evidence in `memory/EXECUTION_TASK_LEDGER_20260916.md` and exact normalized request text in `memory/USER_EXECUTION_REQUEST_20260916.md`. The newest two attachments are identical; the saved Markdown has the same 282 ordered content lines but different line endings. The user explicitly rejects treating the last performance repair or three strategy trials as full completion. P0 remains causal discovery/quote/signal-to-source-BUY conversion and natural costed strategy evaluation; full case/control timelines, all-version strategy disposition, equal-load performance and integrated acceptance remain open. Paper only, original funding period, Live locked, no scheduled review. Every PID, metric and directive below this paragraph is a dated historical checkpoint unless reverified against current code, database and APIs.
