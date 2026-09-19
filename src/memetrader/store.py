@@ -27809,6 +27809,22 @@ class Store:
         # Keep old callers harmless; reconsider only after prospective microstructure evidence.
         return 0
 
+    def register_chain_meme_unpaired_trend249(self) -> int:
+        """Continue the 169 control without its now-retired experiment mate."""
+        from .unpaired_trend249 import ARM, PARENT, policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"])
+            by_arm = {p["arm_id"]: p for p in definition["policies"]}
+            if ARM in by_arm or PARENT not in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION

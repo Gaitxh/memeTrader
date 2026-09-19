@@ -191,10 +191,13 @@ class Engine:
             if arm in state.get("signals", {}) and 0 <= (now-parse_time(state["signals"][arm]["recorded_at"])).total_seconds()<=60:
                 out[arm] = deepcopy(state["signals"][arm])
         from .trend_moonbag169 import alias_signals
+        from .unpaired_trend249 import alias as alias_unpaired249
         from .trajectory_regime187 import alias_signals as alias_regime187
         from .trajectory_exit190 import alias_signals as alias_exit190
         from .trajectory_stop198 import alias_signals as alias_stop198
-        return alias_stop198(alias_exit190(alias_regime187(alias_signals(out))))
+        aliased = alias_signals(out)
+        aliased.update(alias_unpaired249(out.get(ARMS[3])))
+        return alias_stop198(alias_exit190(alias_regime187(aliased)))
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}
