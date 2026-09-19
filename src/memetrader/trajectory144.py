@@ -197,7 +197,10 @@ class Engine:
         from .trajectory_stop198 import alias_signals as alias_stop198
         aliased = alias_signals(out)
         aliased.update(alias_unpaired249(out.get(ARMS[3])))
-        return alias_stop198(alias_exit190(alias_regime187(aliased)))
+        aliased = alias_regime187(aliased)
+        from .solana_regime250 import PARENT as REGIME250_PARENT, alias as alias_regime250
+        aliased.update(alias_regime250(aliased.get(REGIME250_PARENT)))
+        return alias_stop198(alias_exit190(aliased))
 
     def snapshot(self):
         return {"version": VERSION, "pools": len(self.pools), "counts": dict(self.counts), "limits": {"max_pools": MAX_POOLS, "max_rows": MAX_ROWS, "ttl_seconds": TTL_SECONDS}}

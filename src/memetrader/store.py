@@ -27825,6 +27825,22 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_solana_regime250(self) -> int:
+        """Append a chain-specific recent-outcome guard without changing its parent."""
+        from .solana_regime250 import ARM, PARENT, policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"])
+            by_arm = {p["arm_id"]: p for p in definition["policies"]}
+            if ARM in by_arm or PARENT not in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -28960,6 +28976,18 @@ class Store:
                     if floor_rejection is not None:
                         activity_floor_rejections[arm] = floor_rejection
                         continue
+                    regime250_cfg = (policy.get("entry_filter") or {}).get("regime250")
+                    if regime250_cfg is not None:
+                        from .solana_regime250 import evaluate as regime250_evaluate
+                        regime_ok, regime_reason, regime_evidence = regime250_evaluate(
+                            self.db, version=version, decision_at=decision_at,
+                            config=regime250_cfg)
+                        signal = deepcopy(signal)
+                        signal.setdefault("decision_evidence", {})["regime250"] = regime_evidence
+                        candidates[arm] = signal
+                        if not regime_ok:
+                            activity_floor_rejections[arm] = regime_reason
+                            continue
                     event_keys[arm] = str(signal["decision_key"])
                     accepted_cohort_signals[arm] = signal
                     from .cohort_enrollment import owner, synthetic_entry_block

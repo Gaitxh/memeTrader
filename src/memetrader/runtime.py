@@ -1417,6 +1417,7 @@ class Runtime:
                     self.store.register_prebreakout_loss_memory92()
                     self.store.register_failed_impulse_cooling103()
                     self.store.register_chain_meme_unpaired_trend249()
+                    self.store.register_chain_meme_solana_regime250()
                     self.store.register_chain_meme_inventory_research()
                     self.store.register_chain_meme_archive_research()
                     self.store.register_chain_meme_lifecycle_research()
@@ -10521,7 +10522,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','unpaired_trend249.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','unpaired_trend249.py','solana_regime250.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
                    'tempo_matrix162.py','pons_economics.py',
