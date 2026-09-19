@@ -83,11 +83,60 @@ def entry_availability(policies):
     return result
 
 
-def review(definition, positions, root=ROOT):
+def inactivity(policy, rows, *, as_of, availability, by_policy):
+    """Frozen-cutoff diagnosis, not a live entry gate or automatic parameter update."""
+    result = dict(as_of=as_of,last_entry_at=None,hours_without_entry=None,
+        state='CUTOFF_UNKNOWN',review_required=False,entry_attempts='not_measured')
+    if not as_of:
+        return result
+    def clock(value):
+        parsed = datetime.datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        if parsed.tzinfo is None:
+            raise ValueError('explicit timezone required')
+        return parsed
+    try:
+        end=clock(as_of); start=clock(policy['forward_started_at'])
+        entries=[clock(r['opened_at']) for r in rows]
+    except (KeyError,TypeError,ValueError):
+        result['state']='CLOCK_UNKNOWN'
+        return result
+    if start>end:
+        result['state']='NOT_ACTIVATED_AT_CUTOFF'
+        return result
+    visible=[x for x in entries if start<=x<=end]
+    last=max(visible,default=None)
+    result.update(last_entry_at=last.isoformat() if last else None,
+        hours_without_entry=(end-(last or start)).total_seconds()/3600,
+        entries_at_cutoff=len(visible),future_rows_excluded=sum(x>end for x in entries))
+    if policy.get('entry_paused'):
+        result['state']='EXPECTED_PAUSE'
+        return result
+    structural=availability.get('state','UNKNOWN')
+    if structural!='ELIGIBLE_SUBJECT_TO_RUNTIME_CHECKS':
+        result.update(state=structural,review_required=structural!='FORWARD_DISABLED')
+        return result
+    if policy.get('entry_filter',{}).get('failed_impulse_cooling'):
+        core=by_policy.get('resource_age_rate_candidate_v1')
+        if core is None or core.get('entry_paused') or not core.get('forward_enabled',True):
+            result.update(state='NEW_TOKEN_PARENT_TRADE_UNAVAILABLE',review_required=True,
+                prerequisite='resource_age_rate_candidate_v1',
+                caveat='Older same-pool loss receipts may qualify; no new parent trades can be generated.',
+                next_action='Revise to independent observable recovery; do not reactivate failed parent.')
+            return result
+    if result['hours_without_entry']>=24:
+        result.update(state='NEVER_ENTERED_24H' if last is None else 'NO_NEW_ENTRY_24H',
+            review_required=True,next_action='Inspect actual input, signal and rejection evidence; absence is not market-no-opportunity proof.')
+    else:
+        result['state']='NO_ENTRY_YET_UNDER_24H' if last is None else 'RECENT_ENTRY'
+    return result
+
+
+def review(definition, positions, root=ROOT, *, as_of=None):
     from memetrader.alpha149 import SPECS, EXIT_ARMS
     by_arm=collections.defaultdict(list)
     for row in positions: by_arm[row['arm_id']].append(row)
     availability=entry_availability(definition['policies'])
+    by_policy={p['arm_id']:p for p in definition['policies']}
     index=code_index(root); result=[]; fingerprints=collections.defaultdict(list)
     for policy in definition['policies']:
         arm=policy['arm_id']; rows=by_arm[arm]; overall=stats(rows)
@@ -111,8 +160,12 @@ def review(definition, positions, root=ROOT):
             pause_reason=policy.get('entry_pause_reason') or policy.get('assessment_note'),
             activated_at=policy.get('forward_started_at'),frontier=policy.get('forward_activation_snapshot_id'),
             behavior_contract_hash=signature,rule_descriptor=descriptor,source_references=references,
-            entry_availability=availability[arm],metrics=overall,chains=chains,disposition=disposition(policy,overall,chains)))
+            entry_availability=availability[arm],
+            inactivity=inactivity(policy,rows,as_of=as_of,availability=availability[arm],by_policy=by_policy),
+            metrics=overall,chains=chains,disposition=disposition(policy,overall,chains)))
     return dict(generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        position_cutoff=as_of,
+        inactivity_counts=dict(collections.Counter(r['inactivity']['state'] for r in result)),
         policies=len(result),dispositions=dict(collections.Counter(r['disposition'] for r in result)),
         entry_capable=sum(not r['entry_paused'] for r in result),
         entry_capable_definition='legacy unpaused count; not actual admissibility',
@@ -138,6 +191,12 @@ def markdown(report):
             f"{f'{drop:.4f}' if drop is not None else 'NA'} | {row['disposition']} |")
     lines+=['','完整规则、分链指标、源码定位和激活前沿见同名JSON。处置为本次复核分类，不是自动控制。',
             '',*report['caveats']]
+    lines += ['', '## 无交易及依赖复核', '', '统计截止：'+str(report.get('position_cutoff') or '未提供；不推断停滞时长'), '', '| 策略 | 最后入场 | 小时 | 诊断 |', '|---|---|---:|---|']
+    for row in report['rows']:
+        d=row.get('inactivity',{})
+        if d.get('review_required'):
+            hours=d.get('hours_without_entry')
+            lines.append('| '+row['arm_id']+' | '+str(d.get('last_entry_at') or '从未入场')+' | '+(str(round(hours,2)) if hours is not None else 'NA')+' | '+d['state']+' |')
     return '\n'.join(lines)+'\n'
 
 def main():
@@ -148,7 +207,7 @@ def main():
     args=parser.parse_args()
     definition=json.loads(args.policies.read_text(encoding='utf-8-sig'))
     positions=json.loads(args.positions.read_text(encoding='utf-8-sig'))
-    result=review(definition,positions['rows'])
+    result=review(definition,positions['rows'],as_of=positions.get('as_of'))
     result['position_cutoff']=positions.get('as_of')
     result['inputs_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
                              for p in (args.policies,args.positions)}
