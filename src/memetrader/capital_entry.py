@@ -68,6 +68,10 @@ def capital_entry_signal(history: Sequence[Mapping[str, Any]], policy: Mapping[s
     decision, activated, error = _common(history, policy, decision_at, activated_at, context)
     if error: return False, error
     filt = policy["entry_filter"]; direction = str(filt.get("direction") or "").lower()
+    if direction == "liquidity_lead_breadth_confirmed_v1":
+        from .liquidity_breadth254 import signal
+        return signal(history, policy, decision_at=decision_at,
+                      activated_at=activated_at, context=context)
     if direction == "wave_reset_reentry":
         first, new = context.get("first_wave"), context.get("new_episode")
         if not isinstance(first, Mapping) or not isinstance(new, Mapping) or not _evidence_ok(first, decision, activated, fresh=False) or not _evidence_ok(new, decision, activated): return False, "wait_wave_reset_provenance"

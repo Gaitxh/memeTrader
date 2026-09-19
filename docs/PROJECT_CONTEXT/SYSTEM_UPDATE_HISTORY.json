@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260919-strategy-batch251-254",
+      "recorded_at": "2026-09-19T08:26:35.543520Z",
+      "title": "四项新策略：环境保护、去相关路由、BSC生存确认与真实参与广度",
+      "problem": "活跃策略仍整体负期望，487解除错误配对后仍有后期衰减；同一坏Token被多臂重复暴露；BSC核销/硬止损偏高；流动性领先的表面正收益由单一大赢家主导。",
+      "change": "追加251同链严格前向环境门控、252至少两个独立证据族的单Token 20U路由、253 BSC父信号后30–60秒生存确认、254流动性领先与新鲜金额参与广度交集。",
+      "rationale": "分别针对环境失效、相关暴露、BSC快速死亡和LP注入/少数大单伪领先；复用已有观察，不新增请求，不放宽原池、时间或安全规则。",
+      "validation": "13项定向测试通过；共享回归65/69通过，4项为既有测试替身/硬编码策略数与已有代码不一致。08:24:37Z在snapshot1766889/evaluation1758277同一前沿注册，PID43664 manifest 531臂且四模块哈希存在。部署后292条评价已有WAIT/拒绝分解，四臂0决策0仓位。",
+      "scope": "新增四策略模块及最小Store/Runtime/轨迹/路由/金额流接线；父策略、历史、资金期、开放仓、Live和账户耗尽策略均不改。",
+      "status": "实现、测试、部署及首个自然评价读回完成；经济效果待自然终态，不宣称盈利。",
+      "report": "docs/PROJECT_CONTEXT/STRATEGY_BATCH251_254_20260919.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/STRATEGY_BATCH251_254_20260919.md"
+    },
+    {
       "id": "20260917-washout-confirm-and-moonbag223",
       "recorded_at": "2026-09-17T02:56:00Z",
       "title": "修订亏损Moonbag变体并部署洗盘后半程确认的独立Paper策略",

@@ -190,6 +190,8 @@ class Engine:
                 state.setdefault("signals", {})[arm] = envelope; self.counts["signal:"+arm] += 1
             if arm in state.get("signals", {}) and 0 <= (now-parse_time(state["signals"][arm]["recorded_at"])).total_seconds()<=60:
                 out[arm] = deepcopy(state["signals"][arm])
+        from .bsc_survival253 import update as update_bsc_survival253
+        out.update(update_bsc_survival253(out.get(ARMS[3]), f, state, now=now))
         from .trend_moonbag169 import alias_signals
         from .unpaired_trend249 import alias as alias_unpaired249
         from .trajectory_regime187 import alias_signals as alias_regime187
@@ -197,6 +199,8 @@ class Engine:
         from .trajectory_stop198 import alias_signals as alias_stop198
         aliased = alias_signals(out)
         aliased.update(alias_unpaired249(out.get(ARMS[3])))
+        from .trend_regime251 import PARENT as REGIME251_PARENT, alias as alias_regime251
+        aliased.update(alias_regime251(aliased.get(REGIME251_PARENT)))
         aliased = alias_regime187(aliased)
         from .solana_regime250 import PARENT as REGIME250_PARENT, alias as alias_regime250
         aliased.update(alias_regime250(aliased.get(REGIME250_PARENT)))

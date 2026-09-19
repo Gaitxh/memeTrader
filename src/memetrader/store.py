@@ -27841,6 +27841,32 @@ class Store:
             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
             return 1
 
+    def register_chain_meme_strategy_batch251(self) -> int:
+        """Append four independent strict-forward strategy hypotheses at one frontier."""
+        from .trend_regime251 import ARM as ARM251, PARENT as PARENT251, policy as policy251
+        from .diversified_router252 import ARM as ARM252, PARENT as PARENT252, policy as policy252
+        from .bsc_survival253 import ARM as ARM253, PARENT as PARENT253, policy as policy253
+        from .liquidity_breadth254 import ARM as ARM254, PARENT as PARENT254, policy as policy254
+        specifications = (
+            (ARM251, PARENT251, policy251), (ARM252, PARENT252, policy252),
+            (ARM253, PARENT253, policy253), (ARM254, PARENT254, policy254),
+        )
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"])
+            by_arm = {p["arm_id"]: p for p in definition["policies"]}
+            at = utcnow(); added = 0
+            for arm, parent, factory in specifications:
+                if arm in by_arm or parent not in by_arm:
+                    continue
+                self.append_chain_meme_trader_policy(factory(by_arm[parent]), activated_at=at)
+                added += 1
+            return added
+
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -28984,6 +29010,18 @@ class Store:
                             config=regime250_cfg)
                         signal = deepcopy(signal)
                         signal.setdefault("decision_evidence", {})["regime250"] = regime_evidence
+                        candidates[arm] = signal
+                        if not regime_ok:
+                            activity_floor_rejections[arm] = regime_reason
+                            continue
+                    regime251_cfg = (policy.get("entry_filter") or {}).get("regime251")
+                    if regime251_cfg is not None:
+                        from .trend_regime251 import evaluate as regime251_evaluate
+                        regime_ok, regime_reason, regime_evidence = regime251_evaluate(
+                            self.db, version=version, decision_at=decision_at,
+                            chain=token.chain, config=regime251_cfg)
+                        signal = deepcopy(signal)
+                        signal.setdefault("decision_evidence", {})["regime251"] = regime_evidence
                         candidates[arm] = signal
                         if not regime_ok:
                             activity_floor_rejections[arm] = regime_reason

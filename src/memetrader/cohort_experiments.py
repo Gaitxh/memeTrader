@@ -318,6 +318,8 @@ def routed_cohort_signals(signals: Mapping[str, Any], market_state=None) -> dict
         break
     signal,_=regime_route(signals,market_state)
     if signal is not None:result[REGIME_ARM]=signal
+    from .diversified_router252 import alias as diversified_alias
+    result.update(diversified_alias(signals))
     return result
 
 
