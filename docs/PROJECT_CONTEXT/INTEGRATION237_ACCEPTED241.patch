@@ -1,0 +1,55 @@
+--- a/src/memetrader/runtime.py
++++ b/src/memetrader/runtime.py
+@@ -1487,6 +1487,7 @@
+                     self.store.register_chain_meme_washout_confirm222()
+                     self.store.register_chain_meme_trend_anchor220()
+                     self.store.register_chain_meme_existing_revision235()
++                    self.store.register_chain_meme_relative_reawakening237()
+                     from .migration_first209 import Tracker as MigrationFirstTracker
+                     self._migration_first209 = MigrationFirstTracker(utcnow())
+                     from .migration_confirm214 import Tracker as MigrationConfirmTracker
+@@ -10636,7 +10637,7 @@
+             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
+             source=Path(__file__).parent
+             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
+-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','impulse_retest230.py','pressure_sequence234.py','signal_clock234.py','existing_revision235.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
++                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','trend_moonbag169.py','trajectory_regime187.py','trajectory_exit190.py','depth_cross191.py','depth_floor199.py','activity_tempo193.py','activity_tempo_fast200.py','activity_flow224.py','old_pool_absorption227.py','impulse_retest230.py','pressure_sequence234.py','signal_clock234.py','existing_revision235.py','relative_reawakening237.py','activity_confirm211.py','migration_first209.py','migration_confirm214.py','washout_reclaim212.py','washout_confirm222.py','trend_anchor220.py','alpha149.py','mode_learning144.py',
+                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py',
+                    'runtime_timing.py','composite_exit151.py','market_proxy151.py','forward_review151.py','post_exit151.py',
+                    'tempo_matrix162.py','pons_economics.py',
+--- a/src/memetrader/store.py
++++ b/src/memetrader/store.py
+@@ -27684,6 +27684,21 @@
+             self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+             return 1
+ 
++    def register_chain_meme_relative_reawakening237(self) -> int:
++        """Append one relative-baseline revision without changing old contracts."""
++        from .relative_reawakening237 import PARENT, ARM, policy
++        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
++        with self._lock, self.db:
++            registration = self._chain_meme_trader_registration(version)
++            if registration is None:
++                return 0
++            definition = self._chain_meme_trader_effective_definition(version, registration['definition_json'])
++            by_arm = {p['arm_id']: p for p in definition['policies']}
++            if PARENT not in by_arm or ARM in by_arm:
++                return 0
++            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
++            return 1
++
+     def register_chain_meme_existing_revision235(self) -> int:
+         """Append known-parent revisions at one frontier; preserve old accounts."""
+         from .existing_revision235 import SPECS, policies
+@@ -29437,6 +29452,11 @@
+                             entry_blocked[arm] = 'core_loss_episode_consumed_or_position_open'
+                         else:
+                             already_bought.discard(arm)
++                elif policy.get("entry_filter", {}).get("contract") == "relative-reawakening237/v1":
++                    from .relative_reawakening237 import signal as relative237_signal
++                    passed, reason, entry_evidence = relative237_signal(history, policy,
++                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
++                    runner_evidence[policy["arm_id"]] = entry_evidence
+                 elif policy.get("entry_revision_kind"):
+                     from .strategy_revisions import revision_entry_signal
+                     passed, reason = revision_entry_signal(history, policy,

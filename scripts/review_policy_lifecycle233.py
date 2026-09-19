@@ -29,7 +29,7 @@ def stats(rows):
         winning_positions=sum(v>0 for v in values),losing_positions=sum(v<0 for v in values),
         profit_factor=gain/loss if loss else None,profit_factor_undefined=not bool(loss),
         written_off_positions=len(writeoffs),
-        full_loss_writeoffs=sum(float(r.get('realized_proceeds_usd',0))<=1e-9 for r in writeoffs),
+        full_loss_writeoffs=sum(isinstance(r.get('realized_proceeds_usd'),(int,float)) and not isinstance(r['realized_proceeds_usd'],bool) and math.isfinite(r['realized_proceeds_usd']) and 0<=r['realized_proceeds_usd']<=1e-9 for r in writeoffs),
         positive_pnl_writeoffs=sum(float(r['realized_pnl_usd'])>0 for r in writeoffs),
         median_token_pnl=statistics.median(tokens.values()) if tokens else None,
         top_token_pnl=max(tokens.values()) if tokens else None,
@@ -58,10 +58,36 @@ def code_index(root):
                     index[node.value].append(f'{path.relative_to(root).as_posix()}:{node.lineno}')
     return index
 
+def entry_availability(policies):
+    """Static upper bound only; no claim about signal, cash, market or fill eligibility."""
+    groups=collections.defaultdict(list)
+    for p in policies:
+        if p.get('entry_paused') or not p.get('forward_enabled',True): continue
+        if p.get('paired_entry_group'):
+            groups[(p.get('entry_match_mode'),p['paired_entry_group'])].append(p)
+    result={}
+    for p in policies:
+        arm=p['arm_id']
+        if p.get('entry_paused'): state='PAUSED'
+        elif not p.get('forward_enabled',True): state='FORWARD_DISABLED'
+        elif p.get('paired_entry_group'):
+            members=groups[(p.get('entry_match_mode'),p['paired_entry_group'])]
+            try:
+                expected={int(x.get('paired_entry_size',2)) for x in members}
+                state=('ELIGIBLE_SUBJECT_TO_RUNTIME_CHECKS' if expected=={len(members)}
+                       else 'PAIRED_DEPENDENCY_INCOMPLETE')
+            except (ValueError,TypeError,OverflowError): state='PAIR_CONTRACT_UNKNOWN'
+        else: state='ELIGIBLE_SUBJECT_TO_RUNTIME_CHECKS'
+        result[arm]={'state':state,'paired_entry_group':p.get('paired_entry_group'),
+                     'required_pair_size':p.get('paired_entry_size')}
+    return result
+
+
 def review(definition, positions, root=ROOT):
     from memetrader.alpha149 import SPECS, EXIT_ARMS
     by_arm=collections.defaultdict(list)
     for row in positions: by_arm[row['arm_id']].append(row)
+    availability=entry_availability(definition['policies'])
     index=code_index(root); result=[]; fingerprints=collections.defaultdict(list)
     for policy in definition['policies']:
         arm=policy['arm_id']; rows=by_arm[arm]; overall=stats(rows)
@@ -85,10 +111,13 @@ def review(definition, positions, root=ROOT):
             pause_reason=policy.get('entry_pause_reason') or policy.get('assessment_note'),
             activated_at=policy.get('forward_started_at'),frontier=policy.get('forward_activation_snapshot_id'),
             behavior_contract_hash=signature,rule_descriptor=descriptor,source_references=references,
-            metrics=overall,chains=chains,disposition=disposition(policy,overall,chains)))
+            entry_availability=availability[arm],metrics=overall,chains=chains,disposition=disposition(policy,overall,chains)))
     return dict(generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         policies=len(result),dispositions=dict(collections.Counter(r['disposition'] for r in result)),
         entry_capable=sum(not r['entry_paused'] for r in result),
+        entry_capable_definition='legacy unpaused count; not actual admissibility',
+        structural_entry_upper_bound=sum(v['state']=='ELIGIBLE_SUBJECT_TO_RUNTIME_CHECKS' for v in availability.values()),
+        entry_availability_counts=dict(collections.Counter(v['state'] for v in availability.values())),
         hash_groups=[dict(hash=k,arms=v) for k,v in fingerprints.items() if len(v)>1],
         missing_literal_code_reference=[r['arm_id'] for r in result if not r['source_references']],
         rows=result,scope='Frozen files, all effective policies; raw account outcomes, not an additive portfolio.',
@@ -103,7 +132,7 @@ def markdown(report):
         '|---|---|---:|---:|---:|---:|---|']
     for row in report['rows']:
         m=row['metrics']; drop=m['net_without_best_token']
-        lines.append(f"| `{row['arm_id']}` | {'暂停' if row['entry_paused'] else '保留'} | "
+        lines.append(f"| `{row['arm_id']}` | {row.get('entry_availability',{}).get('state', 'UNKNOWN')} | "
             f"{m['terminal_positions']} / {m['terminal_tokens']} | {m['net_usd']:.4f} | "
             f"{m['written_off_positions']} / {m['full_loss_writeoffs']} | "
             f"{f'{drop:.4f}' if drop is not None else 'NA'} | {row['disposition']} |")
