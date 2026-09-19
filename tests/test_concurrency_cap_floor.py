@@ -1,4 +1,4 @@
-"""User-authorized change (2026-09-12): every per-arm concurrency cap below 8 becomes 8.
+"""User-authorized change (2026-09-19): every per-arm concurrency cap below 16 becomes 16.
 
 The registered policy contracts are frozen and append-only, and `chain_meme_trader_policy_additions`
 forbids UPDATE/DELETE by trigger, so the raise is applied where the EFFECTIVE definition is
@@ -6,8 +6,7 @@ assembled. That reaches every consumer at once (entry gating, pending limits, UI
 arms as well as future ones, while the registered rows keep their original values and each affected
 policy carries its original value and the authorization basis.
 
-An arm without the field is deliberately NOT given one: absence means "no cap", which is not a value
-below the floor. Pinning those to 8 would be a tightening, not the requested raise.
+An arm without the field receives the uniform effective cap. Registered rows remain unchanged.
 """
 import json
 from datetime import datetime, timezone
@@ -15,8 +14,8 @@ from datetime import datetime, timezone
 from memetrader.store import Store
 from test_resource_bound_store import setup_store
 
-FLOOR = 8
-NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z')
+FLOOR = 16
+NOW = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def _register_arm(store, arm_id, entry_filter, *, canonical):
@@ -66,12 +65,12 @@ def test_a_registered_cap_below_the_floor_is_raised_at_runtime(tmp_path, monkeyp
 
 def test_a_cap_at_or_above_the_floor_is_left_alone(tmp_path, monkeypatch):
     store, _ = setup_store(tmp_path, monkeypatch)
-    for arm, cap, canonical in (('cap-floor-probe-exact-v1', FLOOR, 'probe-cap-8'),
-                                ('cap-floor-probe-above-v1', 12, 'probe-cap-12')):
+    for arm, cap, canonical in (('cap-floor-probe-exact-v1', FLOOR, 'probe-cap-16'),
+                                ('cap-floor-probe-above-v1', 24, 'probe-cap-24')):
         _register_arm(store, arm, {'direction': 'probe', 'max_concurrent_positions': cap},
                       canonical=canonical)
     definition = _effective(store)
-    for arm, cap in (('cap-floor-probe-exact-v1', FLOOR), ('cap-floor-probe-above-v1', 12)):
+    for arm, cap in (('cap-floor-probe-exact-v1', FLOOR), ('cap-floor-probe-above-v1', 24)):
         policy = _policy(definition, arm)
         assert policy['entry_filter']['max_concurrent_positions'] == cap
         assert not policy.get('concurrency_cap_revision')
@@ -79,7 +78,7 @@ def test_a_cap_at_or_above_the_floor_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_policy_without_the_field_gets_the_uniform_cap(tmp_path, monkeypatch):
-    """User instruction (2026-09-12): every strategy gets a cap of 8.
+    """User instruction (2026-09-19): every strategy gets an effective cap of at least 16.
 
     This supersedes the earlier choice to leave the uncapped arms unlimited: an arm that registered no
     cap previously had none, and is now filled in with the uniform cap. The marker records that the

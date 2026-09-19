@@ -3472,7 +3472,7 @@ class ChainWebData:
                     "registered_notional_usd": note.get("registered_notional_usd"),
                     "registered_max_concurrent_positions": note.get(
                         "registered_max_concurrent_positions"),
-                    "basis": ("2026-09-12 用户指令：全部策略单笔统一 20U、同时持仓上限 8；"
+                    "basis": ("2026-09-19 用户指令：全部策略单笔保持 20U、同时持仓上限由 8 提升至 16；"
                               "上方 description 前置注记为同一口径"),
                     "applies_to": "paper_only",
                 }

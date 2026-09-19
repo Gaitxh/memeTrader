@@ -295,13 +295,14 @@ class Store:
     CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION = "chain-meme-trader/funding-20260906-reviewed-1000"
     CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION = "chain-meme-trader/funding-20260906-v002-final-1000"
     CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION
-    # USER-AUTHORIZED (2026-09-12): every arm whose own `entry_filter.max_concurrent_positions` is
+    # USER-AUTHORIZED (2026-09-19, superseding the 2026-09-12 floor of 8): every arm whose own
+    # `entry_filter.max_concurrent_positions` is
     # below this floor is raised to it - existing arms included, not only new ones. The registered,
     # append-only contracts stay frozen; the raise is applied where the effective definition is
     # assembled, so it reaches every consumer (entry gating, pending limits, UI) at once, and each
     # affected policy carries its registered value plus the authorization basis. An arm without the
-    # field is left untouched: absence means "no cap", which is not a value below the floor.
-    CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR = 8
+    # field receives the same effective cap so the runtime does not retain an unlimited exception.
+    CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR = 16
     # USER-AUTHORIZED (2026-09-12): one uniform per-trade notional, applied to existing arms as well
     # as future ones, so strategies can be compared like for like instead of being mixed across
     # 1U/2U/5U/20U positions. Registered contracts stay frozen; the change is applied where the
@@ -7572,13 +7573,14 @@ class Store:
                     "activated_at": str(row["activated_at"]),
                     "activation_snapshot_id": int(row["activation_snapshot_id"]),
                 })
-        # USER-AUTHORIZED RUNTIME REVISIONS (2026-09-12). Two uniformizations are applied here, where
+        # USER-AUTHORIZED RUNTIME REVISIONS (cap raised 2026-09-19; notional set 2026-09-12). Two
+        # uniformizations are applied here, where
         # the effective definition is assembled, because the registered contracts are frozen and
         # append-only and `chain_meme_trader_policy_additions` forbids UPDATE/DELETE by trigger:
         #   1. every per-arm `entry_filter.max_concurrent_positions` is set to the uniform cap - an
         #      explicit value below it is raised, an absent field is filled in, because the user's
-        #      instruction is "every strategy: cap 8" (this supersedes the earlier choice to leave the
-        #      uncapped arms unlimited);
+        #      instruction is "raise 8 positions to 16" (this supersedes the earlier floor of 8 and
+        #      the still earlier choice to leave uncapped arms unlimited);
         #   2. every per-arm `notional_usd` is set to the one uniform per-trade size, so strategies can
         #      be compared like for like;
         #   3. descriptions that were written when a different size applied get an authoritative
@@ -7600,7 +7602,7 @@ class Store:
                 entry_filter = policy.get("entry_filter")
                 if not isinstance(entry_filter, Mapping):
                     # Some arms registered no `entry_filter` at all. They previously had no cap either,
-                    # so "every strategy: cap 8" has to create the filter here. Adding only this key
+                    # so the uniform effective cap has to create the filter here. Adding only this key
                     # leaves every other gate untouched: `chain_meme_trader_entry_filter_matches`
                     # returns True for a missing filter and only inspects the keys it knows.
                     policy["entry_filter"] = {"max_concurrent_positions": floor}
@@ -7608,9 +7610,10 @@ class Store:
                         "field": "entry_filter.max_concurrent_positions",
                         "registered": None,
                         "effective": floor,
-                        "authorized_at": "2026-09-12",
-                        "basis": ("user instruction: every strategy gets a cap of 8; the arm "
-                                  "registered no entry_filter and therefore no cap"),
+                        "authorized_at": "2026-09-19",
+                        "basis": ("user instruction: raise the effective per-strategy position cap "
+                                  "from 8 to 16; the arm registered no entry_filter and therefore "
+                                  "no cap"),
                         "registered_behavior_contract_hash": str(
                             policy.get("behavior_contract_hash") or ""),
                     }
@@ -7620,7 +7623,7 @@ class Store:
                     continue
                 cap = entry_filter.get("max_concurrent_positions")
                 if cap is None:
-                    # "Every strategy: cap 8" also covers the arms that registered no cap at all
+                    # The uniform effective cap also covers arms that registered no cap at all
                     # (previously unlimited). Filling the field is what makes the rule uniform and
                     # the cross-strategy comparison like for like.
                     updated = dict(entry_filter)
@@ -7630,9 +7633,10 @@ class Store:
                         "field": "entry_filter.max_concurrent_positions",
                         "registered": None,
                         "effective": floor,
-                        "authorized_at": "2026-09-12",
-                        "basis": ("user instruction: every strategy gets a cap of 8; the arm had "
-                                  "registered no cap, which previously meant unlimited"),
+                        "authorized_at": "2026-09-19",
+                        "basis": ("user instruction: raise the effective per-strategy position cap "
+                                  "from 8 to 16; the arm had registered no cap, which previously "
+                                  "meant unlimited"),
                         "registered_behavior_contract_hash": str(
                             policy.get("behavior_contract_hash") or ""),
                     }
@@ -7652,9 +7656,10 @@ class Store:
                     "field": "entry_filter.max_concurrent_positions",
                     "registered": cap_value,
                     "effective": floor,
-                    "authorized_at": "2026-09-12",
-                    "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
-                              "existing strategies included"),
+                    "authorized_at": "2026-09-19",
+                    "basis": ("user instruction: raise the effective per-strategy position cap "
+                              "from 8 to 16; every registered cap below 16 is raised, existing "
+                              "strategies included"),
                     "registered_behavior_contract_hash": str(policy.get("behavior_contract_hash") or ""),
                 }
                 raised.append({"arm_id": str(policy.get("arm_id") or ""), "registered": cap_value})
@@ -7694,7 +7699,7 @@ class Store:
         # front of its own text; the original wording is preserved after it, so the operator still sees
         # what the arm was registered as. Untouched arms are left exactly as registered.
         notes = 0
-        note_prefix = f"【现行参数 2026-09-12】单笔名义 {uniform_notional:g}U、同时持仓上限 {floor}；"
+        note_prefix = f"【现行参数 2026-09-19】单笔名义 {uniform_notional:g}U、同时持仓上限 {floor}；"
         if floor > 0 and uniform_notional > 0:
             for policy in policies:
                 cap_marker = policy.get("concurrency_cap_revision")
@@ -7715,7 +7720,7 @@ class Store:
                     "effective_max_concurrent_positions": floor,
                     "registered_notional_usd": registered_size,
                     "registered_max_concurrent_positions": registered_cap,
-                    "authorized_at": "2026-09-12",
+                    "authorized_at": "2026-09-19",
                 }
                 original = policy.get("description")
                 if isinstance(original, str) and original.strip() and not original.startswith(note_prefix):
@@ -7741,9 +7746,10 @@ class Store:
                 "floor": floor,
                 "raised_policies": len(raised),
                 "filled_uncapped_policies": len(filled),
-                "authorized_at": "2026-09-12",
-                "basis": ("user instruction: every strategy gets a cap of 8 - values below it are "
-                          "raised and arms that registered no cap are given one"),
+                "authorized_at": "2026-09-19",
+                "basis": ("user instruction: raise the effective per-strategy position cap from 8 "
+                          "to 16 - values below 16 are raised and arms that registered no cap are "
+                          "given one"),
                 "detail": raised + filled,
                 "description_notes": notes,
             }

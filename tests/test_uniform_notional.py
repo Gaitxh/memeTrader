@@ -151,7 +151,7 @@ def test_both_uniformizations_apply_to_the_same_arm(tmp_path, monkeypatch):
                   canonical='probe-notional-both')
     policy = _policy(_effective(store), arm)
     assert policy['notional_usd'] == UNIFORM
-    assert policy['entry_filter']['max_concurrent_positions'] == 8
+    assert policy['entry_filter']['max_concurrent_positions'] == 16
     assert policy['notional_revision']['registered'] == 2.0
     assert policy['concurrency_cap_revision']['registered'] == 2
     expected = Store.chain_meme_trader_behavior_hash(
