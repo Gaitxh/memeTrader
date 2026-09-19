@@ -1420,6 +1420,7 @@ class Runtime:
                     self.store.register_chain_meme_solana_regime250()
                     self.store.register_chain_meme_inventory_research()
                     self.store.register_chain_meme_strategy_batch251()
+                    self.store.register_chain_meme_synthetic_proxy255()
                     self.store.register_chain_meme_archive_research()
                     self.store.register_chain_meme_lifecycle_research()
                     self.store.register_chain_meme_runner_capture()

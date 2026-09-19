@@ -1,3 +1,15 @@
+# 当前恢复入口：12小时停流与低成交逐项处置255（2026-09-19）
+
+先读 `docs/PROJECT_CONTEXT/DORMANT_SPARSE_STRATEGY_REVIEW_20260919.md`。按09:12:17Z冻结点，在当前可入场且非账户耗尽策略中，
+筛出29条静默>=12小时、19条运行>=12小时且BUY<=3（合并30条，14条从未BUY），逐条区分结构阻断、后帧/安全转换、
+父事件缺失和真实稀疏。新增255：原`synthetic_fast_harvest_v1`的8次准入全部因安全源/同池卖出证明缺失而过期，原臂不动，
+255复用同一BUILDING信号与退出，只允许无明确危险证据且两帧原池连续性成立的限域Paper近似；不增加请求、不称安全证明。
+`quiet_renewal_v1`与legacy control四次同入场终局中3次更差1次相同，增量-24.699310U，已可逆暂停新入场，保留历史/退出。
+11项相关测试通过；09:21:58Z由原监督器重载PID46364/532臂。255已回读ACTIVE_FORWARD，20U/cap16；候选quiet renewal为
+PAUSED_NEW_ENTRY、legacy control仍ACTIVE_FORWARD。原资金期/Paper/Live锁不变；255尚无自然终局，不宣称改善PNL。账户耗尽继续完全排除。
+
+---
+
 # 当前恢复入口：基础链后续帧容量保护（2026-09-19）
 
 先读 `docs/PROJECT_CONTEXT/FOUNDATION_FOLLOWUP_CAPACITY_20260919.md`。生产遥测确认策略后续确认帧在低优先级槽位 p95 等待约14.64秒，

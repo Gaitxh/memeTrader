@@ -32,7 +32,8 @@ def open_or_reserved_full(db, version, arm, limit, cohort_id=-1, as_of=None):
 
 def synthetic_entry_block(db, version, arm, token_id, cohort_id=None):
     """Synthetic lifetime token exclusion and one open-or-reserved slot."""
-    if arm != 'synthetic_fast_harvest_v1':return None
+    from .synthetic_proxy255 import ARM as PROXY_ARM
+    if arm not in {'synthetic_fast_harvest_v1', PROXY_ARM}:return None
     if db.execute('SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND token_id=? LIMIT 1',
                   (version,arm,token_id)).fetchone():return 'synthetic_no_reentry'
     if db.execute("SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND status='open' LIMIT 1",

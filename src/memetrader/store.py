@@ -27867,6 +27867,22 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_synthetic_proxy255(self) -> int:
+        """Append an opt-in DEX-continuity arm; never alter the exact-proof parent."""
+        from .synthetic_proxy255 import ARM, PARENT, policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"])
+            by_arm = {p["arm_id"]: p for p in definition["policies"]}
+            if ARM in by_arm or PARENT not in by_arm:
+                return 0
+            self.append_chain_meme_trader_policy(policy(by_arm[PARENT]), activated_at=utcnow())
+            return 1
+
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION

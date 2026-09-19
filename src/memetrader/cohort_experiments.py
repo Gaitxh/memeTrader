@@ -294,6 +294,8 @@ def recovered_signal_aliases(signals):
             signal=copy.deepcopy(signals[source])
             signal['decision_key']=signal['decision_key']+'|'+arm
             result[arm]=signal
+    from .synthetic_proxy255 import PARENT as SYNTHETIC_PARENT, alias as synthetic_alias
+    result.update(synthetic_alias(signals.get(SYNTHETIC_PARENT)))
     return result
 
 
