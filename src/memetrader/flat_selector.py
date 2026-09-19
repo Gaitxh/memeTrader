@@ -119,11 +119,15 @@ class FlatSelector:
     def _advance(self, now: datetime) -> None:
         db, evaluation_highwater, observation_highwater, registered, dirty = self._snapshot()
         try:
+            # The highwater is an INTEGER PRIMARY KEY interval, not a period scan.
+            # At 2026-09-19 the planner chose the period/pool index and sorted
+            # the full period for 150 new rows (0.374s vs 0.003s). NOT INDEXED
+            # still allows rowid lookup; other table indexes and all filters stay.
             new_evaluations = [self._evaluation_from_row(row) for row in db.execute(
                 "SELECT e.token_id,t.chain,t.address,e.id AS evaluation_id,"
                 "json_extract(e.feature_json,'$.pair_address') AS pair_address,"
                 "json_extract(e.feature_json,'$.pair_created_at') AS pair_created_at "
-                "FROM chain_meme_trader_v6_entry_evaluations e JOIN tokens t "
+                "FROM chain_meme_trader_v6_entry_evaluations e NOT INDEXED JOIN tokens t "
                 "ON t.token_id=e.token_id WHERE e.definition_version=? AND e.id>? AND e.id<=? "
                 "AND COALESCE(json_extract(e.feature_json,'$.pair_address'),'')!='' ORDER BY e.id",
                 (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
