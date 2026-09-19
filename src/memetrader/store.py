@@ -28699,7 +28699,8 @@ class Store:
             for p in active:
                 if p.get('entry_filter',{}).get('include_pending_in_limit'):
                     from .cohort_enrollment import open_or_reserved_full
-                    if open_or_reserved_full(self.db,version,p['arm_id'],limited[p['arm_id']]):
+                    if open_or_reserved_full(
+                            self.db,version,p['arm_id'],limited[p['arm_id']],as_of=iso(decision_at)):
                         entry_blocked[p['arm_id']]='strategy_open_or_reserved_limit'
                 if p.get('requires_distinct_trajectory_frame'):
                     trajectory=self._trajectory_engine_for(p)
@@ -30020,7 +30021,7 @@ class Store:
         pending_limits={p['arm_id']:int(p['entry_filter']['max_concurrent_positions'])
             for p in definition['policies'] if p.get('trajectory_engine')=='v144'}
         decisions=[d for d in decisions if d['arm_id'] not in pending_limits or not open_or_reserved_full(
-            self.db,version,d['arm_id'],pending_limits[d['arm_id']],cohort_id)]
+            self.db,version,d['arm_id'],pending_limits[d['arm_id']],cohort_id,as_of=filled_at)]
         if not decisions:return 0
         from .cohort_experiments import REGIME_ARM, regime_route
         if any(d['arm_id']==REGIME_ARM for d in decisions):
@@ -30028,7 +30029,8 @@ class Store:
             market_state=self._current_microstructure_state(token_id,None,parse_time(filled_at),cohort_id=cohort_id)
             _,disposition=regime_route({},market_state)
             if (disposition['state'] in {'DISTRIBUTING_OR_UNSELLABLE','SYNTHETIC_BUILDING'}
-                    or open_or_reserved_full(self.db,version,REGIME_ARM,2,cohort_id)):
+                    or open_or_reserved_full(
+                        self.db,version,REGIME_ARM,2,cohort_id,as_of=filled_at)):
                 decisions=[d for d in decisions if d['arm_id']!=REGIME_ARM]
                 if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)

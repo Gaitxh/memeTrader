@@ -4,13 +4,29 @@ import json
 ANNOTATION_KEY='duplicate-opportunity-contamination/v1:'
 
 
-def open_or_reserved_full(db, version, arm, limit, cohort_id=-1):
+def open_or_reserved_full(db, version, arm, limit, cohort_id=-1, as_of=None):
+    """Count open positions and only still-executable unfilled reservations.
+
+    Claims are durable ownership receipts, not perpetual slot reservations.  A
+    worker interruption can leave ``terminal_reason`` unset, so an old claim
+    without a position must stop consuming capacity after the registered
+    signal-to-execution deadline.  Keep the receipt append-only and derive its
+    current capacity effect from the admitted decision clock.
+    """
+    clock_sql = "julianday('now')" if as_of is None else "julianday(?)"
     rows=db.execute("SELECT shadow_cohort_id FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
         "AND status='open' AND shadow_cohort_id<>? UNION SELECT c.cohort_id FROM chain_meme_cohort_enrollment_claims c "
+        "JOIN chain_meme_trader_entry_decisions d ON d.definition_version=c.definition_version "
+        "AND d.arm_id=c.arm_id AND d.shadow_cohort_id=c.cohort_id AND d.status='admitted' "
+        "LEFT JOIN chain_meme_trader_registrations r ON r.definition_version=d.definition_version "
         "WHERE c.definition_version=? AND c.arm_id=? AND c.cohort_id<>? AND c.terminal_reason IS NULL "
         "AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p WHERE p.definition_version=c.definition_version "
-        "AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) LIMIT ?",
-        (version,arm,cohort_id,version,arm,cohort_id,int(limit))).fetchall()
+        "AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) "
+        "AND julianday(d.decided_at)<=" + clock_sql + " AND " + clock_sql + "<="
+        "julianday(d.decided_at)+COALESCE(json_extract(r.definition_json,'$.max_signal_to_execution_start_seconds'),120)/86400.0 "
+        "LIMIT ?",
+        (version,arm,cohort_id,version,arm,cohort_id,
+         *(() if as_of is None else (as_of,as_of)),int(limit))).fetchall()
     return len(rows)>=int(limit)
 
 
